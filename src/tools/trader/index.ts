@@ -59,6 +59,7 @@ export const toolSpecs = [
 		call: async (c, p) => {
 			const account = await c.trader.accounts.getAccountByNumber({
 				pathParams: { accountNumber: p.accountNumber },
+				queryParams: { fields: p.fields },
 			})
 			const displayMap = await buildAccountDisplayMap(c)
 			return scrubAccountIdentifiers(account, displayMap)

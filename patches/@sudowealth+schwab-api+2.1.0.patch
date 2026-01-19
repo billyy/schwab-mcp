@@ -1,0 +1,50 @@
+diff --git a/node_modules/@sudowealth/schwab-api/dist/src/trader/accounts/schema.d.ts b/node_modules/@sudowealth/schwab-api/dist/src/trader/accounts/schema.d.ts
+index 44082e8..eb2ed08 100644
+--- a/node_modules/@sudowealth/schwab-api/dist/src/trader/accounts/schema.d.ts
++++ b/node_modules/@sudowealth/schwab-api/dist/src/trader/accounts/schema.d.ts
+@@ -2,20 +2,20 @@ import { z } from 'zod';
+ export declare const AccountsBaseInstrument: z.ZodObject<{
+     assetType: z.ZodEnum<["EQUITY", "MUTUAL_FUND", "OPTION", "FUTURE", "FOREX", "INDEX", "CASH_EQUIVALENT", "FIXED_INCOME", "PRODUCT", "CURRENCY", "COLLECTIVE_INVESTMENT"]>;
+     cusip: z.ZodOptional<z.ZodString>;
+-    symbol: z.ZodString;
++    symbol: z.ZodOptional<z.ZodString>;
+     description: z.ZodOptional<z.ZodString>;
+     instrumentId: z.ZodOptional<z.ZodNumber>;
+     netChange: z.ZodOptional<z.ZodNumber>;
+ }, "strip", z.ZodTypeAny, {
+-    symbol: string;
+     assetType: "EQUITY" | "FOREX" | "FUTURE" | "INDEX" | "MUTUAL_FUND" | "OPTION" | "CASH_EQUIVALENT" | "FIXED_INCOME" | "PRODUCT" | "CURRENCY" | "COLLECTIVE_INVESTMENT";
++    symbol?: string | undefined;
+     description?: string | undefined;
+     cusip?: string | undefined;
+     netChange?: number | undefined;
+     instrumentId?: number | undefined;
+ }, {
+-    symbol: string;
+     assetType: "EQUITY" | "FOREX" | "FUTURE" | "INDEX" | "MUTUAL_FUND" | "OPTION" | "CASH_EQUIVALENT" | "FIXED_INCOME" | "PRODUCT" | "CURRENCY" | "COLLECTIVE_INVESTMENT";
++    symbol?: string | undefined;
+     description?: string | undefined;
+     cusip?: string | undefined;
+     netChange?: number | undefined;
+diff --git a/node_modules/@sudowealth/schwab-api/dist/src/trader/accounts/schema.js b/node_modules/@sudowealth/schwab-api/dist/src/trader/accounts/schema.js
+index 4c1ca3f..37958b3 100644
+--- a/node_modules/@sudowealth/schwab-api/dist/src/trader/accounts/schema.js
++++ b/node_modules/@sudowealth/schwab-api/dist/src/trader/accounts/schema.js
+@@ -4,7 +4,7 @@ import { assetType, AccountAPIOptionDeliverable } from '../shared';
+ export const AccountsBaseInstrument = z.object({
+     assetType: assetType,
+     cusip: z.string().optional(), // Made optional based on some TransactionInstrument variations
+-    symbol: z.string(),
++    symbol: z.string().optional(), // Made optional because cash equivalents may not have symbols
+     description: z.string().optional(),
+     instrumentId: z.number().int().optional(),
+     netChange: z.number().optional(),
+@@ -21,7 +21,7 @@ const AccountEquity = AccountsBaseInstrument.extend({
+ });
+ const AccountFixedIncome = AccountsBaseInstrument.extend({
+     assetType: z.literal(assetType.Enum.FIXED_INCOME),
+-    maturityDate: z.string().datetime().optional(),
++    maturityDate: z.string().optional(), // Accepts both date (YYYY-MM-DD) and datetime formats
+     factor: z.number().optional(),
+     variableRate: z.number().optional(),
+ });
