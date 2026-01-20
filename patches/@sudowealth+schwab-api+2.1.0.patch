@@ -27,10 +27,10 @@ index 44082e8..eb2ed08 100644
      cusip?: string | undefined;
      netChange?: number | undefined;
 diff --git a/node_modules/@sudowealth/schwab-api/dist/src/trader/accounts/schema.js b/node_modules/@sudowealth/schwab-api/dist/src/trader/accounts/schema.js
-index 4c1ca3f..37958b3 100644
+index 4c1ca3f..40f4abe 100644
 --- a/node_modules/@sudowealth/schwab-api/dist/src/trader/accounts/schema.js
 +++ b/node_modules/@sudowealth/schwab-api/dist/src/trader/accounts/schema.js
-@@ -4,7 +4,7 @@ import { assetType, AccountAPIOptionDeliverable } from '../shared';
+@@ -4,11 +4,11 @@ import { assetType, AccountAPIOptionDeliverable } from '../shared';
  export const AccountsBaseInstrument = z.object({
      assetType: assetType,
      cusip: z.string().optional(), // Made optional based on some TransactionInstrument variations
@@ -39,6 +39,11 @@ index 4c1ca3f..37958b3 100644
      description: z.string().optional(),
      instrumentId: z.number().int().optional(),
      netChange: z.number().optional(),
+-});
++}).passthrough(); // Allow additional fields not in schema
+ const AccountCashEquivalent = AccountsBaseInstrument.extend({
+     assetType: z.literal(assetType.Enum.CASH_EQUIVALENT),
+     type: z
 @@ -21,7 +21,7 @@ const AccountEquity = AccountsBaseInstrument.extend({
  });
  const AccountFixedIncome = AccountsBaseInstrument.extend({
@@ -49,9 +54,18 @@ index 4c1ca3f..37958b3 100644
      variableRate: z.number().optional(),
  });
 diff --git a/node_modules/@sudowealth/schwab-api/dist/src/trader/orders/schema.js b/node_modules/@sudowealth/schwab-api/dist/src/trader/orders/schema.js
-index 99a31a9..4f91b63 100644
+index 99a31a9..a8077ad 100644
 --- a/node_modules/@sudowealth/schwab-api/dist/src/trader/orders/schema.js
 +++ b/node_modules/@sudowealth/schwab-api/dist/src/trader/orders/schema.js
+@@ -269,7 +269,7 @@ const ExecutionLeg = z.object({
+     quantity: z.number(),
+     mismarkedQuantity: z.number(),
+     instrumentId: z.number().int(), // Assuming instrumentId is an int based on context
+-    time: z.string().datetime(),
++    time: z.string(), // Accepts any datetime format
+ });
+ const OrderActivity = z.object({
+     activityType: activityType,
 @@ -279,89 +279,89 @@ const OrderActivity = z.object({
      executionLegs: z.array(ExecutionLeg),
  });
@@ -68,10 +82,11 @@ index 99a31a9..4f91b63 100644
 -    quantityType: quantityType,
 -    divCapGains: divCapGains,
 -    toSymbol: z.string(),
+-});
 +    quantityType: quantityType.optional(),
 +    divCapGains: divCapGains.optional(),
 +    toSymbol: z.string().optional(),
- });
++}).passthrough(); // Allow additional fields not in schema
  const OrderRequest = z.object({
      session: session,
      duration: duration,
@@ -125,6 +140,7 @@ index 99a31a9..4f91b63 100644
 -    replacingOrderCollection: z.array(z.object({})), // Placeholder
 -    childOrderStrategies: z.array(z.object({})), // Placeholder
 -    statusDescription: z.string(), // Typically not part of a request
+-});
 +    orderId: z.number().int().optional(), // Optional for new orders
 +    cancelable: z.boolean().default(false).optional(), // Typically not part of a request
 +    editable: z.boolean().default(false).optional(), // Typically not part of a request
@@ -136,7 +152,7 @@ index 99a31a9..4f91b63 100644
 +    replacingOrderCollection: z.array(z.object({})).optional(), // Placeholder
 +    childOrderStrategies: z.array(z.object({})).optional(), // Placeholder
 +    statusDescription: z.string().optional(), // Typically not part of a request
- });
++}).passthrough(); // Allow additional fields not in schema
  const Order = z.object({
      session: session,
      duration: duration,
