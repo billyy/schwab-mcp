@@ -49,7 +49,7 @@ index 4c1ca3f..37958b3 100644
      variableRate: z.number().optional(),
  });
 diff --git a/node_modules/@sudowealth/schwab-api/dist/src/trader/orders/schema.js b/node_modules/@sudowealth/schwab-api/dist/src/trader/orders/schema.js
-index 99a31a9..df82835 100644
+index 99a31a9..4f91b63 100644
 --- a/node_modules/@sudowealth/schwab-api/dist/src/trader/orders/schema.js
 +++ b/node_modules/@sudowealth/schwab-api/dist/src/trader/orders/schema.js
 @@ -279,89 +279,89 @@ const OrderActivity = z.object({
@@ -92,13 +92,13 @@ index 99a31a9..df82835 100644
 -    priceLinkType: priceLinkType,
 -    price: z.number(),
 -    taxLotMethod: taxLotMethod,
-+    cancelTime: z.string().datetime().optional(),
++    cancelTime: z.string().optional(), // Accepts any datetime format
 +    complexOrderStrategyType: complexOrderStrategyType.optional(),
 +    quantity: z.number().optional(),
 +    filledQuantity: z.number().optional(), // Typically not part of a request, but included per spec
 +    remainingQuantity: z.number().optional(), // Typically not part of a request, but included per spec
 +    destinationLinkName: z.string().optional(),
-+    releaseTime: z.string().datetime().optional(),
++    releaseTime: z.string().optional(), // Accepts any datetime format
 +    stopPrice: z.number().optional(),
 +    stopPriceLinkBasis: stopPriceLinkBasis.optional(),
 +    stopPriceLinkType: stopPriceLinkType.optional(),
@@ -129,8 +129,8 @@ index 99a31a9..df82835 100644
 +    cancelable: z.boolean().default(false).optional(), // Typically not part of a request
 +    editable: z.boolean().default(false).optional(), // Typically not part of a request
 +    status: status.optional(), // Typically not part of a request
-+    enteredTime: z.string().datetime().optional(), // Typically set by server
-+    closeTime: z.string().datetime().optional(), // Typically set by server
++    enteredTime: z.string().optional(), // Typically set by server, accepts any datetime format
++    closeTime: z.string().optional(), // Typically set by server, accepts any datetime format
 +    accountNumber: z.string().optional(), // Must match path param, but often optional in body?
 +    orderActivityCollection: z.array(OrderActivity).optional(), // Typically not part of a request
 +    replacingOrderCollection: z.array(z.object({})).optional(), // Placeholder
@@ -158,14 +158,14 @@ index 99a31a9..df82835 100644
 -    priceLinkType: priceLinkType,
 -    price: z.number(),
 -    taxLotMethod: taxLotMethod,
-+    cancelTime: z.string().datetime().optional(),
++    cancelTime: z.string().optional(), // Accepts any datetime format
 +    complexOrderStrategyType: complexOrderStrategyType.optional(),
 +    quantity: z.number().optional(),
 +    filledQuantity: z.number().optional(),
 +    remainingQuantity: z.number().optional(),
 +    requestedDestination: requestedDestination.optional(),
 +    destinationLinkName: z.string().optional(),
-+    releaseTime: z.string().datetime().optional(),
++    releaseTime: z.string().optional(), // Accepts any datetime format
 +    stopPrice: z.number().optional(),
 +    stopPriceLinkBasis: stopPriceLinkBasis.optional(),
 +    stopPriceLinkType: stopPriceLinkType.optional(),
@@ -197,8 +197,8 @@ index 99a31a9..df82835 100644
 +    cancelable: z.boolean().default(false).optional(),
 +    editable: z.boolean().default(false).optional(),
 +    status: status.optional(),
-+    enteredTime: z.string().datetime().optional(),
-+    closeTime: z.string().datetime().optional(),
++    enteredTime: z.string().optional(), // Accepts any datetime format
++    closeTime: z.string().optional(), // Accepts any datetime format
 +    tag: z.string().optional(),
 +    accountNumber: z.number().int().optional(),
 +    orderActivityCollection: z.array(OrderActivity).optional(),
