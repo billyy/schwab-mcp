@@ -97,12 +97,35 @@ export const toolSpecs = [
 		description: 'Place order for a specific account',
 		schema: PlaceOrderParams,
 		call: async (c, p) => {
-			const order = await c.trader.orders.placeOrderForAccount({
-				pathParams: { accountNumber: p.accountNumber },
-				body: p,
+			logger.info('[placeOrder] Placing order', {
+				accountNumber: p.accountNumber ? '***' + p.accountNumber.slice(-4) : 'missing',
+				orderType: p.orderType,
+				session: p.session,
+				duration: p.duration,
+				orderStrategyType: p.orderStrategyType,
+				orderLegCount: p.orderLegCollection?.length,
 			})
-			const displayMap = await buildAccountDisplayMap(c)
-			return scrubAccountIdentifiers(order, displayMap)
+			const { accountNumber, ...orderBody } = p
+			logger.debug('[placeOrder] Full order body', { body: JSON.stringify(orderBody) })
+			try {
+				const order = await c.trader.orders.placeOrderForAccount({
+					pathParams: { accountNumber },
+					body: orderBody,
+				})
+				logger.info('[placeOrder] Order placed successfully', { order })
+				const displayMap = await buildAccountDisplayMap(c)
+				return scrubAccountIdentifiers(order, displayMap)
+			} catch (error: any) {
+				logger.error('[placeOrder] Order failed', {
+					message: error.message,
+					status: error.status,
+					code: error.code,
+					body: error.body,
+					metadata: error.metadata,
+					stack: error.stack,
+				})
+				throw error
+			}
 		},
 	}),
 	createToolSpec({
@@ -134,9 +157,10 @@ export const toolSpecs = [
 		description: 'Replace order by order id for a specific account',
 		schema: ReplaceOrderParams,
 		call: async (c, p) => {
+			const { accountNumber, orderId, ...orderBody } = p
 			const order = await c.trader.orders.replaceOrder({
-				pathParams: { accountNumber: p.accountNumber, orderId: p.orderId },
-				body: p,
+				pathParams: { accountNumber, orderId },
+				body: orderBody,
 			})
 			const displayMap = await buildAccountDisplayMap(c)
 			return scrubAccountIdentifiers(order, displayMap)

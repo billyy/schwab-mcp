@@ -1,3 +1,57 @@
+diff --git a/node_modules/@sudowealth/schwab-api/dist/src/market-data/instruments/schema.js b/node_modules/@sudowealth/schwab-api/dist/src/market-data/instruments/schema.js
+index b4e96b3..8fd17a2 100644
+--- a/node_modules/@sudowealth/schwab-api/dist/src/market-data/instruments/schema.js
++++ b/node_modules/@sudowealth/schwab-api/dist/src/market-data/instruments/schema.js
+@@ -190,8 +190,8 @@ export const GetInstrumentsQueryParams = z.object({
+ export const GetInstrumentsParams = z.object(mergeShapes(GetInstrumentsQueryParams.shape, GetInstrumentsPathParams.shape));
+ // Response Schema for /instruments
+ export const GetInstrumentsResponse = z.object({
+-    instruments: z.array(InstrumentSchema),
+-});
++    instruments: z.array(InstrumentSchema).optional().default([]),
++}).passthrough(); // Allow additional fields
+ // Path Parameters Schema for GET /instruments/{cusip_id}
+ export const GetInstrumentByCusipPathParams = z.object({
+     cusip_id: z.string().describe('CUSIP of a security'),
+diff --git a/node_modules/@sudowealth/schwab-api/dist/src/market-data/options/schema.js b/node_modules/@sudowealth/schwab-api/dist/src/market-data/options/schema.js
+index 5fd8032..15b4976 100644
+--- a/node_modules/@sudowealth/schwab-api/dist/src/market-data/options/schema.js
++++ b/node_modules/@sudowealth/schwab-api/dist/src/market-data/options/schema.js
+@@ -30,18 +30,22 @@ export const ExpirationTypeEnum = z.enum(['M', 'Q', 'S', 'W']);
+ export const SettlementTypeEnum = z.enum(['A', 'P']); // AM or PM
+ // --- Nested Schemas ---
+ export const OptionDeliverablesSchema = z.object({
+-    symbol: z.string().describe('Deliverable symbol'),
++    symbol: z.string().optional().describe('Deliverable symbol'),
+     assetType: z
+         .string()
+-        .describe('Asset type of the deliverable (e.g., EQUITY, CURRENCY)'), // Consider reusing InstrumentAssetTypeEnum if applicable
++        .optional()
++        .nullable()
++        .describe('Asset type of the deliverable (e.g., EQUITY, CURRENCY)'),
+     deliverableUnits: z
+         .union([z.string(), z.number()])
++        .optional()
+         .describe('Units of the deliverable'),
+     currencyType: z
+         .string()
+         .optional()
++        .nullable()
+         .describe('Currency type of the deliverable'),
+-});
++}).passthrough(); // Allow additional fields
+ export const UnderlyingSchema = z.object({
+     ask: z.number().optional().describe('Current ask price for the underlying'),
+     askSize: z
+@@ -249,7 +253,7 @@ export const OptionChainSchema = z.object({
+         .string()
+         .optional()
+         .describe('Status of the request (e.g., SUCCESS)'),
+-    underlying: UnderlyingSchema.optional().describe('Details of the underlying instrument'),
++    underlying: UnderlyingSchema.optional().nullable().describe('Details of the underlying instrument'),
+     strategy: OptionStrategyEnum.optional().describe('Strategy used for the option chain request'),
+     interval: z
+         .number()
 diff --git a/node_modules/@sudowealth/schwab-api/dist/src/trader/accounts/schema.d.ts b/node_modules/@sudowealth/schwab-api/dist/src/trader/accounts/schema.d.ts
 index 44082e8..eb2ed08 100644
 --- a/node_modules/@sudowealth/schwab-api/dist/src/trader/accounts/schema.d.ts
@@ -54,9 +108,74 @@ index 4c1ca3f..40f4abe 100644
      variableRate: z.number().optional(),
  });
 diff --git a/node_modules/@sudowealth/schwab-api/dist/src/trader/orders/schema.js b/node_modules/@sudowealth/schwab-api/dist/src/trader/orders/schema.js
-index 99a31a9..a8077ad 100644
+index 99a31a9..2da1580 100644
 --- a/node_modules/@sudowealth/schwab-api/dist/src/trader/orders/schema.js
 +++ b/node_modules/@sudowealth/schwab-api/dist/src/trader/orders/schema.js
+@@ -160,7 +160,7 @@ const instruction = z.enum([
+     'SELL_SHORT_EXEMPT',
+ ]);
+ const activityType = z.enum(['EXECUTION', 'ORDER_ACTION']);
+-const executionType = z.enum(['FILL']);
++const executionType = z.enum(['FILL', 'CANCELED', 'EXPIRED', 'REJECTED', 'PARTIAL_FILL', 'URG_OUT', 'CORRECTION']);
+ const orderLegType = z.enum([
+     'EQUITY',
+     'OPTION',
+@@ -199,37 +199,37 @@ const status = z.enum([
+ ]);
+ const AccountsBaseInstrument = z.object({
+     assetType: assetType,
+-    cusip: z.string(),
+-    symbol: z.string(),
+-    description: z.string(),
++    cusip: z.string().optional(),
++    symbol: z.string().optional(),
++    description: z.string().optional(),
+     instrumentId: z.number().int().optional(), // Assuming int based on spec ($int64)
+     netChange: z.number().optional(),
+-});
++}).passthrough(); // Allow additional fields
+ // // Define placeholder schemas for the individual account instrument types
+ const AccountCashEquivalent = AccountsBaseInstrument.extend({
+     assetType: z.literal('CASH_EQUIVALENT'),
+-    type: z.enum(['SWEEP_VEHICLE', 'SAVINGS', 'MONEY_MARKET_FUND', 'UNKNOWN']),
+-    underlyingSymbol: z.string(),
+-});
++    type: z.enum(['SWEEP_VEHICLE', 'SAVINGS', 'MONEY_MARKET_FUND', 'UNKNOWN']).optional(),
++    underlyingSymbol: z.string().optional(),
++}).passthrough();
+ const AccountEquity = AccountsBaseInstrument.extend({
+     assetType: z.literal('EQUITY'),
+-});
++}).passthrough();
+ const AccountFixedIncome = AccountsBaseInstrument.extend({
+     assetType: z.literal('FIXED_INCOME'),
+-    maturityDate: z.string().datetime(),
+-    factor: z.number(),
+-    variableRate: z.number(),
+-});
++    maturityDate: z.string().optional(),
++    factor: z.number().optional(),
++    variableRate: z.number().optional(),
++}).passthrough();
+ const AccountMutualFund = AccountsBaseInstrument.extend({
+     assetType: z.literal('MUTUAL_FUND'),
+-});
++}).passthrough();
+ const AccountOption = AccountsBaseInstrument.extend({
+     assetType: z.literal('OPTION'),
+-    optionDeliverables: z.array(z.lazy(() => AccountAPIOptionDeliverable)),
+-    putCall: z.enum(['PUT', 'CALL', 'UNKNOWN']),
+-    optionMultiplier: z.number().int(),
+-    type: z.enum(['VANILLA', 'BINARY', 'BARRIER', 'UNKNOWN']),
+-});
++    optionDeliverables: z.array(z.lazy(() => AccountAPIOptionDeliverable)).optional(),
++    putCall: z.enum(['PUT', 'CALL', 'UNKNOWN']).optional(),
++    optionMultiplier: z.number().int().optional(),
++    type: z.enum(['VANILLA', 'BINARY', 'BARRIER', 'UNKNOWN']).optional(),
++}).passthrough(); // Allow additional fields
+ const AccountFuture = AccountsBaseInstrument.extend({
+     assetType: z.literal('FUTURE'),
+     expirationDate: z.string().datetime().optional(),
 @@ -269,7 +269,7 @@ const ExecutionLeg = z.object({
      quantity: z.number(),
      mismarkedQuantity: z.number(),
@@ -224,3 +343,21 @@ index 99a31a9..a8077ad 100644
  });
  export const GetOrdersResponseBody = z.array(Order);
  // --- GET /orders endpoint schemas ---
+diff --git a/node_modules/@sudowealth/schwab-api/dist/src/trader/shared/account-api-option-deliverable.schema.js b/node_modules/@sudowealth/schwab-api/dist/src/trader/shared/account-api-option-deliverable.schema.js
+index 8dd6795..4745d05 100644
+--- a/node_modules/@sudowealth/schwab-api/dist/src/trader/shared/account-api-option-deliverable.schema.js
++++ b/node_modules/@sudowealth/schwab-api/dist/src/trader/shared/account-api-option-deliverable.schema.js
+@@ -2,8 +2,8 @@ import { z } from 'zod';
+ import { ApiCurrencyType } from './api-currency-type.schema';
+ import { assetType } from './asset-type.schema';
+ export const AccountAPIOptionDeliverable = z.object({
+-    symbol: z.string(),
+-    deliverableUnits: z.number(),
+-    apiCurrencyType: ApiCurrencyType,
+-    assetType: assetType,
+-});
++    symbol: z.string().optional(),
++    deliverableUnits: z.number().optional(),
++    apiCurrencyType: ApiCurrencyType.optional().nullable(),
++    assetType: assetType.optional().nullable(),
++}).passthrough(); // Allow additional fields
