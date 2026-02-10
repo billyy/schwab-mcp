@@ -14,8 +14,69 @@ import {
 	GetTransactionByIdParams,
 	GetUserPreferenceParams,
 } from '@sudowealth/schwab-api'
+import { z } from 'zod'
 import { logger } from '../../shared/log'
 import { createToolSpec } from '../types'
+
+/**
+ * Common trading abbreviations that AI models tend to use.
+ * Maps abbreviations → Schwab's full enum values.
+ */
+const DURATION_ALIASES: Record<string, string> = {
+	GTC: 'GOOD_TILL_CANCEL',
+	FOK: 'FILL_OR_KILL',
+	IOC: 'IMMEDIATE_OR_CANCEL',
+}
+
+const ORDER_TYPE_ALIASES: Record<string, string> = {
+	MKT: 'MARKET',
+	LMT: 'LIMIT',
+	STP: 'STOP',
+	STP_LMT: 'STOP_LIMIT',
+}
+
+const INSTRUCTION_ALIASES: Record<string, string> = {
+	BTO: 'BUY_TO_OPEN',
+	BTC: 'BUY_TO_CLOSE',
+	STO: 'SELL_TO_OPEN',
+	STC: 'SELL_TO_CLOSE',
+}
+
+/** Wrap a Zod type with preprocessing to accept common aliases */
+function withAliases(zodType: z.ZodTypeAny, aliases: Record<string, string>) {
+	return z.preprocess(
+		(val) =>
+			typeof val === 'string' && aliases[val] ? aliases[val] : val,
+		zodType,
+	)
+}
+
+/**
+ * Wrap an order schema (PlaceOrderParams or ReplaceOrderParams) with alias
+ * normalization so the MCP SDK accepts common trading abbreviations like
+ * GTC, LMT, BTO, etc. before Zod enum validation runs.
+ */
+function withOrderAliases(schema: z.ZodObject<any>) {
+	return z.object({
+		...schema.shape,
+		duration: withAliases(schema.shape.duration, DURATION_ALIASES),
+		orderType: withAliases(schema.shape.orderType, ORDER_TYPE_ALIASES),
+		orderLegCollection: z.preprocess(
+			(val) => {
+				if (!Array.isArray(val)) return val
+				return val.map((leg: any) => {
+					if (!leg || typeof leg !== 'object') return leg
+					const instr = leg.instruction
+					if (typeof instr === 'string' && INSTRUCTION_ALIASES[instr]) {
+						return { ...leg, instruction: INSTRUCTION_ALIASES[instr] }
+					}
+					return leg
+				})
+			},
+			schema.shape.orderLegCollection,
+		),
+	})
+}
 
 export const toolSpecs = [
 	createToolSpec({
@@ -94,8 +155,9 @@ export const toolSpecs = [
 	}),
 	createToolSpec({
 		name: 'placeOrder',
-		description: 'Place order for a specific account',
-		schema: PlaceOrderParams,
+		description:
+			'Place order for a specific account. Accepts abbreviations: GTC, LMT, MKT, STP, STP_LMT, BTO, BTC, STO, STC.',
+		schema: withOrderAliases(PlaceOrderParams) as typeof PlaceOrderParams,
 		call: async (c, p) => {
 			logger.info('[placeOrder] Placing order', {
 				accountNumber: p.accountNumber ? '***' + p.accountNumber.slice(-4) : 'missing',
@@ -110,7 +172,7 @@ export const toolSpecs = [
 			try {
 				const order = await c.trader.orders.placeOrderForAccount({
 					pathParams: { accountNumber },
-					body: orderBody,
+					body: orderBody as typeof p,
 				})
 				logger.info('[placeOrder] Order placed successfully', { order })
 				const displayMap = await buildAccountDisplayMap(c)
@@ -154,13 +216,14 @@ export const toolSpecs = [
 	}),
 	createToolSpec({
 		name: 'replaceOrder',
-		description: 'Replace order by order id for a specific account',
-		schema: ReplaceOrderParams,
+		description:
+			'Replace order by order id for a specific account. Accepts abbreviations: GTC, LMT, MKT, STP, STP_LMT, BTO, BTC, STO, STC.',
+		schema: withOrderAliases(ReplaceOrderParams) as typeof ReplaceOrderParams,
 		call: async (c, p) => {
 			const { accountNumber, orderId, ...orderBody } = p
 			const order = await c.trader.orders.replaceOrder({
 				pathParams: { accountNumber, orderId },
-				body: orderBody,
+				body: orderBody as typeof p,
 			})
 			const displayMap = await buildAccountDisplayMap(c)
 			return scrubAccountIdentifiers(order, displayMap)

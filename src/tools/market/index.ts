@@ -13,6 +13,79 @@ import {
 import { logger } from '../../shared/log'
 import { createToolSpec } from '../types'
 
+/** Strip option chain responses to essential trading fields to stay under MCP size limits. */
+function slimOptionChain(data: Record<string, unknown>) {
+	const essentialContractFields = [
+		'symbol',
+		'putCall',
+		'strikePrice',
+		'expirationDate',
+		'daysToExpiration',
+		'bidPrice',
+		'askPrice',
+		'lastPrice',
+		'markPrice',
+		'totalVolume',
+		'openInterest',
+		'delta',
+		'gamma',
+		'theta',
+		'vega',
+		'volatility',
+		'intrinsicValue',
+		'timeValue',
+		'isInTheMoney',
+	] as const
+
+	function slimContract(contract: Record<string, unknown>) {
+		const slim: Record<string, unknown> = {}
+		for (const key of essentialContractFields) {
+			if (contract[key] !== undefined) {
+				slim[key] = contract[key]
+			}
+		}
+		return slim
+	}
+
+	function slimExpDateMap(
+		expDateMap: Record<string, Record<string, unknown[]>> | undefined,
+	) {
+		if (!expDateMap) return undefined
+		const result: Record<string, Record<string, unknown[]>> = {}
+		for (const [expDate, strikes] of Object.entries(expDateMap)) {
+			result[expDate] = {}
+			for (const [strike, contracts] of Object.entries(
+				strikes as Record<string, unknown[]>,
+			)) {
+				result[expDate][strike] = (contracts || []).map((c) =>
+					slimContract(c as Record<string, unknown>),
+				)
+			}
+		}
+		return result
+	}
+
+	return {
+		symbol: data.symbol,
+		status: data.status,
+		isDelayed: data.isDelayed,
+		isIndex: data.isIndex,
+		underlyingPrice: data.underlyingPrice,
+		volatility: data.volatility,
+		underlying: data.underlying,
+		callExpDateMap: slimExpDateMap(
+			data.callExpDateMap as
+				| Record<string, Record<string, unknown[]>>
+				| undefined,
+		),
+		putExpDateMap: slimExpDateMap(
+			data.putExpDateMap as
+				| Record<string, Record<string, unknown[]>>
+				| undefined,
+		),
+	}
+}
+
 export const toolSpecs = [
 	createToolSpec({
 		name: 'getQuotes',
@@ -102,12 +175,33 @@ export const toolSpecs = [
 	}),
 	createToolSpec({
 		name: 'getOptionChain',
-		description: 'Get option chain for an optionable symbol',
+		description:
+			'Get option chain for an optionable symbol. Use strikeCount, contractType, range, fromDate/toDate, and daysToExpiration to narrow results. Response is trimmed to essential trading fields.',
 		schema: GetOptionChainParams,
-		call: (c, p) =>
-			c.marketData.options.getOptionChain({
-				queryParams: { symbol: p.symbol },
-			}),
+		call: async (c, p) => {
+			const data = await c.marketData.options.getOptionChain({
+				queryParams: {
+					symbol: p.symbol,
+					contractType: p.contractType,
+					strikeCount: p.strikeCount,
+					strike: p.strike,
+					range: p.range,
+					fromDate: p.fromDate,
+					toDate: p.toDate,
+					daysToExpiration: p.daysToExpiration,
+					expMonth: p.expMonth,
+					strategy: p.strategy,
+					volatility: p.volatility,
+					underlyingPrice: p.underlyingPrice,
+					interestRate: p.interestRate,
+					interval: p.interval,
+					optionType: p.optionType,
+					entitlement: p.entitlement,
+					includeUnderlyingQuote: p.includeUnderlyingQuote,
+				},
+			})
+			return slimOptionChain(data)
+		},
 	}),
 	createToolSpec({
 		name: 'getOptionExpirationChain',
@@ -122,17 +216,43 @@ export const toolSpecs = [
 		name: 'getPriceHistory',
 		description: 'Get price history for a specific symbol and date range',
 		schema: GetPriceHistoryParams,
-		call: (c, p) =>
-			c.marketData.priceHistory.getPriceHistory({
-				queryParams: {
-					symbol: p.symbol,
-					period: p.period,
-					periodType: p.periodType,
-					frequency: p.frequency,
-					frequencyType: p.frequencyType,
-					startDate: p.startDate,
-					endDate: p.endDate,
-				},
-			}),
+		call: async (c, p) => {
+			logger.info('[getPriceHistory] Fetching price history', {
+				symbol: p.symbol,
+				periodType: p.periodType,
+				period: p.period,
+				frequencyType: p.frequencyType,
+				frequency: p.frequency,
+				startDate: p.startDate,
+				endDate: p.endDate,
+			})
+			try {
+				const result = await c.marketData.priceHistory.getPriceHistory({
+					queryParams: {
+						symbol: p.symbol,
+						period: p.period,
+						periodType: p.periodType,
+						frequency: p.frequency,
+						frequencyType: p.frequencyType,
+						startDate: p.startDate,
+						endDate: p.endDate,
+					},
+				})
+				logger.info('[getPriceHistory] Success', {
+					symbol: result.symbol,
+					candleCount: result.candles?.length,
+					empty: result.empty,
+				})
+				return result
+			} catch (error: any) {
+				logger.error('[getPriceHistory] Failed', {
+					message: error.message,
+					status: error.status,
+					code: error.code,
+					body: error.body,
+				})
+				throw error
+			}
+		},
 	}),
 ] as const
