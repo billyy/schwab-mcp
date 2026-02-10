@@ -13,6 +13,48 @@ import {
 import { logger } from '../../shared/log'
 import { createToolSpec } from '../types'
 
+/** Strip quote responses to essential trading fields. */
+function slimQuotes(data: Record<string, unknown>) {
+	const result: Record<string, unknown> = {}
+	for (const [symbol, raw] of Object.entries(data)) {
+		const quote = raw as Record<string, unknown>
+		const q = quote.quote as Record<string, unknown> | undefined
+		const slim: Record<string, unknown> = {
+			symbol: quote.symbol,
+			description: quote.description,
+			assetType: quote.assetType,
+			isDelayed: quote.isDelayed,
+		}
+		if (q) {
+			slim.bidPrice = q.bidPrice
+			slim.askPrice = q.askPrice
+			slim.lastPrice = q.lastPrice
+			slim.mark = q.mark
+			slim.openPrice = q.openPrice
+			slim.highPrice = q.highPrice
+			slim.lowPrice = q.lowPrice
+			slim.closePrice = q.closePrice
+			slim.totalVolume = q.totalVolume
+			slim.netChange = q.netChange
+			slim.netPercentChange = q.netPercentChange
+			slim['52WeekHigh'] = q['52WeekHigh']
+			slim['52WeekLow'] = q['52WeekLow']
+			slim.volatility = q.volatility
+		}
+		// Include option-specific fields when present
+		if (quote.delta !== undefined) slim.delta = quote.delta
+		if (quote.gamma !== undefined) slim.gamma = quote.gamma
+		if (quote.theta !== undefined) slim.theta = quote.theta
+		if (quote.vega !== undefined) slim.vega = quote.vega
+		if (quote.openInterest !== undefined) slim.openInterest = quote.openInterest
+		if (quote.strikePrice !== undefined) slim.strikePrice = quote.strikePrice
+		if (quote.expirationDate !== undefined)
+			slim.expirationDate = quote.expirationDate
+		result[symbol] = slim
+	}
+	return result
+}
+
 /** Strip option chain responses to essential trading fields to stay under MCP size limits. */
 function slimOptionChain(data: Record<string, unknown>) {
 	const essentialContractFields = [
@@ -89,20 +131,23 @@ function slimOptionChain(data: Record<string, unknown>) {
 export const toolSpecs = [
 	createToolSpec({
 		name: 'getQuotes',
-		description: 'Get quotes for a list of symbols',
+		description:
+			'Get quotes for a list of symbols. Defaults to quote fields only; pass fields=["all"] for fundamental/extended data.',
 		schema: GetQuotesParams,
 		call: async (c, p) => {
+			const fields = p.fields ?? ['quote']
 			logger.info('[getQuotes] Fetching quotes', {
 				symbols: p.symbols,
-				fields: p.fields,
+				fields,
 			})
-			return c.marketData.quotes.getQuotes({
+			const data = await c.marketData.quotes.getQuotes({
 				queryParams: {
 					symbols: p.symbols,
-					fields: p.fields,
+					fields,
 					indicative: p.indicative,
 				},
 			})
+			return slimQuotes(data as Record<string, unknown>)
 		},
 	}),
 	createToolSpec({
