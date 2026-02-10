@@ -42,6 +42,14 @@ const envSchema = z.object({
 		.enum(['development', 'staging', 'production'])
 		.optional()
 		.default('production'),
+
+	ENABLED_TOOLS: z
+		.string()
+		.optional()
+		.default('core')
+		.describe(
+			'Tools to enable: "all", "core" (default), "tool1,tool2", "+tool1,+tool2" (add to core), "-tool1" (remove from core)',
+		),
 })
 
 function buildConfigInternal(env: Env): ValidatedEnv {

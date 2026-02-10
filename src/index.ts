@@ -25,7 +25,12 @@ import { makeKvTokenStore, type TokenIdentifiers } from './shared/kvTokenStore'
 import { logger, buildLogger, type PinoLogLevel } from './shared/log'
 import { logOnlyInDevelopment } from './shared/secureLogger'
 import { createTool, toolError, toolSuccess } from './shared/toolBuilder'
-import { allToolSpecs, type ToolSpec } from './tools'
+import {
+	allToolSpecs,
+	type ToolSpec,
+	parseEnabledTools,
+	filterToolSpecs,
+} from './tools'
 
 /**
  * DO props now contain only IDs needed for token key derivation
@@ -163,7 +168,7 @@ export class MyMCP extends DurableMCP<MyMCPProps, Env> {
 			this.mcpLogger.debug(
 				'[MyMCP.init] STEP 5A: Proactively calling this.tokenManager.initialize() (async)...',
 			)
-			const etmInitSuccess = this.tokenManager.initialize()
+			const etmInitSuccess = await this.tokenManager.initialize()
 			this.mcpLogger.debug(
 				`[MyMCP.init] STEP 5B: Proactive ETM initialization complete. Success: ${etmInitSuccess}`,
 			)
@@ -193,8 +198,17 @@ export class MyMCP extends DurableMCP<MyMCPProps, Env> {
 			this.mcpLogger.debug('[MyMCP.init] STEP 6: SchwabApiClient ready.')
 
 			// 4. Register tools (this.server.tool calls are synchronous)
-			this.mcpLogger.debug('[MyMCP.init] STEP 7A: Calling registerTools...')
-			allToolSpecs.forEach((spec: ToolSpec<any>) => {
+			// Filter tools based on ENABLED_TOOLS configuration
+			const enabledTools = parseEnabledTools(this.validatedConfig.ENABLED_TOOLS)
+			const filteredToolSpecs = filterToolSpecs(allToolSpecs, enabledTools)
+
+			this.mcpLogger.debug('[MyMCP.init] STEP 7A: Calling registerTools...', {
+				enabledToolsConfig: this.validatedConfig.ENABLED_TOOLS,
+				totalTools: allToolSpecs.length,
+				enabledCount: filteredToolSpecs.length,
+				enabledNames: filteredToolSpecs.map((s) => s.name),
+			})
+			filteredToolSpecs.forEach((spec: ToolSpec<any>) => {
 				createTool(this.client, this.server, {
 					name: spec.name,
 					description: spec.description,
@@ -335,4 +349,5 @@ export default new OAuthProvider({
 	defaultHandler: SchwabHandler as any, // Cast remains
 	authorizeEndpoint: API_ENDPOINTS.AUTHORIZE,
 	tokenEndpoint: API_ENDPOINTS.TOKEN,
+	clientRegistrationEndpoint: API_ENDPOINTS.REGISTER,
 })

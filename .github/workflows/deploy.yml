@@ -83,7 +83,7 @@ jobs:
             },
             "dev": {
               "port": 8788,
-              "local_protocol": "https",
+              "local_protocol": "http",
               "upstream_protocol": "https"
             }
           }

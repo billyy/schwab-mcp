@@ -1,0 +1,25 @@
+# Local Development Environment Variables
+# Copy this file to .dev.vars and fill in your actual values
+
+SCHWAB_CLIENT_ID=your_schwab_app_key_here
+SCHWAB_CLIENT_SECRET=your_schwab_app_secret_here
+SCHWAB_REDIRECT_URI=http://localhost:8788/callback
+COOKIE_ENCRYPTION_KEY=generate_with_openssl_rand_hex_32
+
+# Optional: Enable debug logging
+LOG_LEVEL=debug
+ENVIRONMENT=development
+
+# Optional: Control which tools are enabled (reduces context usage)
+# Options:
+#   "core"              - Only frequently used tools (default)
+#   "all"               - All available tools
+#   "tool1,tool2"       - Only specific tools
+#   "+tool1,+tool2"     - Core tools PLUS specified extended tools
+#   "-tool1,-tool2"     - Core tools MINUS specified tools
+#
+# Core tools: getAccounts, getAccount, getQuotes, getPriceHistory, getOptionChain, placeOrder, getOrders, cancelOrder
+# Extended tools: getAccountNumbers, getUserPreference, getOrdersByAccountNumber, getOrder, replaceOrder,
+#                 getTransactions, getTransaction, getQuoteBySymbolId, searchInstruments, getInstrumentByCusip,
+#                 getMarketHours, getMarketHoursByMarketId, getMovers, getOptionExpirationChain
+ENABLED_TOOLS=core

@@ -60,6 +60,14 @@ export function initializeSchwabAuthClient(
 		debug: config.LOG_LEVEL === 'debug' || config.LOG_LEVEL === 'trace',
 		traceOperations: config.LOG_LEVEL === 'trace',
 		refreshThresholdMs: 5 * 60 * 1000,
+		onTokenEvent: (event, data, metadata) => {
+			authLogger.info('[TokenEvent]', {
+				event,
+				hasAccessToken: !!data?.accessToken,
+				expiresAt: data?.expiresAt,
+				metadata,
+			})
+		},
 	}
 
 	// Configure auth with enhanced token manager

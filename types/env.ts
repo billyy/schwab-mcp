@@ -47,6 +47,11 @@ export interface Env {
 	 * Optional comma-separated list of additional redirect URI regex patterns
 	 */
 	ALLOWED_REDIRECT_REGEXPS?: string
+
+	/**
+	 * Tools to enable: "all", "core" (default), "tool1,tool2", "+tool1" (add to core), "-tool1" (remove from core)
+	 */
+	ENABLED_TOOLS?: string
 }
 
 /**
@@ -95,4 +100,9 @@ export interface ValidatedEnv {
 	 * Optional comma-separated list of additional redirect URI regex patterns
 	 */
 	readonly ALLOWED_REDIRECT_REGEXPS?: string
+
+	/**
+	 * Tools to enable: "all", "core" (default), "tool1,tool2", "+tool1" (add to core), "-tool1" (remove from core)
+	 */
+	readonly ENABLED_TOOLS: string
 }

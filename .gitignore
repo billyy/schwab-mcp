@@ -172,4 +172,5 @@ wrangler.jsonc
 wrangler.local.jsonc
 wrangler.deploy.jsonc
 .dev.vars
+.dev.vars.backup
 .wrangler/
