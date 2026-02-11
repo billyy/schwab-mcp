@@ -152,18 +152,20 @@ export const toolSpecs = [
 	}),
 	createToolSpec({
 		name: 'getQuoteBySymbolId',
-		description: 'Get quote for a one symbol',
+		description:
+			'Get quote for a single symbol. Defaults to quote fields only; pass fields=["all"] for fundamental/extended data.',
 		schema: GetQuoteBySymbolIdParams,
 		call: async (c, p) => {
+			const fields = p.fields ?? ['quote']
 			logger.info('[getQuoteBySymbolId] Fetching quote', {
 				symbol_id: p.symbol_id,
-				fields: p.fields,
+				fields,
 			})
 			const quoteData = await c.marketData.quotes.getQuoteBySymbolId({
 				pathParams: { symbol_id: p.symbol_id },
-				queryParams: { fields: p.fields },
+				queryParams: { fields },
 			})
-			return quoteData
+			return slimQuotes(quoteData as Record<string, unknown>)
 		},
 	}),
 	createToolSpec({
