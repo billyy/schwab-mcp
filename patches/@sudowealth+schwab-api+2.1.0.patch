@@ -52,6 +52,19 @@ index 5fd8032..15b4976 100644
      strategy: OptionStrategyEnum.optional().describe('Strategy used for the option chain request'),
      interval: z
          .number()
+diff --git a/node_modules/@sudowealth/schwab-api/dist/src/market-data/priceHistory/schema.js b/node_modules/@sudowealth/schwab-api/dist/src/market-data/priceHistory/schema.js
+index 83acb81..289a041 100644
+--- a/node_modules/@sudowealth/schwab-api/dist/src/market-data/priceHistory/schema.js
++++ b/node_modules/@sudowealth/schwab-api/dist/src/market-data/priceHistory/schema.js
+@@ -98,7 +98,7 @@ export const PriceHistoryCandleSchema = z.object({
+ // Schema for the Response Body of GET /pricehistory
+ export const GetPriceHistoryResponse = z.object({
+     candles: z
+-        .array(PriceHistoryCandleSchema)
++        .array(z.any())
+         .describe('Array of price history candles'),
+     symbol: z.string().describe('The symbol for which price history was fetched'),
+     empty: z
 diff --git a/node_modules/@sudowealth/schwab-api/dist/src/market-data/quotes/schema.js b/node_modules/@sudowealth/schwab-api/dist/src/market-data/quotes/schema.js
 index 3ed41f0..b8062b9 100644
 --- a/node_modules/@sudowealth/schwab-api/dist/src/market-data/quotes/schema.js
