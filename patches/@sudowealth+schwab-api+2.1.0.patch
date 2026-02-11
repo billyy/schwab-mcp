@@ -52,6 +52,25 @@ index 5fd8032..15b4976 100644
      strategy: OptionStrategyEnum.optional().describe('Strategy used for the option chain request'),
      interval: z
          .number()
+diff --git a/node_modules/@sudowealth/schwab-api/dist/src/market-data/quotes/schema.js b/node_modules/@sudowealth/schwab-api/dist/src/market-data/quotes/schema.js
+index 3ed41f0..b8062b9 100644
+--- a/node_modules/@sudowealth/schwab-api/dist/src/market-data/quotes/schema.js
++++ b/node_modules/@sudowealth/schwab-api/dist/src/market-data/quotes/schema.js
+@@ -747,7 +747,7 @@ export const GetQuoteBySymbolIdParams = z.object(mergeShapes(GetQuoteBySymbolIdQ
+ // Response Body Schema for GET /quotes/{symbol_id}
+ // NOTE: The Schwab API returns the same format as the bulk quotes endpoint,
+ // wrapping the quote data in an object with the symbol as the key
+-export const GetQuoteBySymbolIdResponse = z.record(z.string(), QuoteResponseSchema);
++export const GetQuoteBySymbolIdResponse = z.record(z.string(), z.any()); // Skip expensive Zod validation; slimQuotes handles field extraction
+ // --- GET /quotes endpoint schemas ---
+ // Path Parameters Schema for GET /quotes (no path params)
+ export const GetQuotesPathParams = z.object({});
+@@ -770,4 +770,4 @@ export const GetQuotesQueryParams = z.object({
+ // Request Params Schema for GET /quotes (merged path + query params)
+ export const GetQuotesParams = z.object(mergeShapes(GetQuotesQueryParams.shape, GetQuotesPathParams.shape));
+ // Response Body Schema for GET /quotes
+-export const GetQuotesResponse = z.record(z.string(), QuoteResponseSchema);
++export const GetQuotesResponse = z.record(z.string(), z.any()); // Skip expensive Zod validation; slimQuotes handles field extraction
 diff --git a/node_modules/@sudowealth/schwab-api/dist/src/trader/accounts/schema.d.ts b/node_modules/@sudowealth/schwab-api/dist/src/trader/accounts/schema.d.ts
 index 44082e8..eb2ed08 100644
 --- a/node_modules/@sudowealth/schwab-api/dist/src/trader/accounts/schema.d.ts
