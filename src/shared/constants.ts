@@ -67,4 +67,7 @@ export const CONTENT_TYPES = {
  * KV Token Store Constants
  */
 export const TOKEN_KEY_PREFIX = 'token:' as const
+export const TOKEN_TIMESTAMP_KEY_PREFIX = 'token_ts:' as const
 export const TTL_31_DAYS = 31 * 24 * 60 * 60
+export const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000
+export const REFRESH_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60

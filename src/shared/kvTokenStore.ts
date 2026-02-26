@@ -3,7 +3,12 @@ import {
 	type TokenIdentifiers,
 	type KVNamespace,
 } from '@sudowealth/schwab-api'
-import { TOKEN_KEY_PREFIX, TTL_31_DAYS } from './constants'
+import {
+	TOKEN_KEY_PREFIX,
+	TOKEN_TIMESTAMP_KEY_PREFIX,
+	TTL_31_DAYS,
+	REFRESH_TOKEN_TTL_MS,
+} from './constants'
 import { logger } from './log'
 
 // Create a type that matches the existing interface
@@ -16,6 +21,9 @@ export interface KvTokenStore<T = any> {
 		fromIds: TokenIdentifiers,
 		toIds: TokenIdentifiers,
 	): Promise<void>
+	saveTimestamp(ids: TokenIdentifiers): Promise<void>
+	isTokenStale(ids: TokenIdentifiers): Promise<boolean>
+	clearToken(ids: TokenIdentifiers): Promise<void>
 }
 
 /**
@@ -54,6 +62,29 @@ export function makeKvTokenStore<T = any>(kv: KVNamespace): KvTokenStore<T> {
 					to: sdkStore.generateKey(toIds),
 				})
 			}
+		},
+		saveTimestamp: async (ids: TokenIdentifiers) => {
+			const tsKey = `${TOKEN_TIMESTAMP_KEY_PREFIX}${sdkStore.generateKey(ids)}`
+			await kv.put(tsKey, String(Date.now()), {
+				expirationTtl: TTL_31_DAYS,
+			})
+		},
+		isTokenStale: async (ids: TokenIdentifiers) => {
+			const tsKey = `${TOKEN_TIMESTAMP_KEY_PREFIX}${sdkStore.generateKey(ids)}`
+			const storedAt = await kv.get(tsKey)
+			if (!storedAt) {
+				return true
+			}
+			const age = Date.now() - Number(storedAt)
+			return age > REFRESH_TOKEN_TTL_MS
+		},
+		clearToken: async (ids: TokenIdentifiers) => {
+			const tokenKey = sdkStore.generateKey(ids)
+			const tsKey = `${TOKEN_TIMESTAMP_KEY_PREFIX}${tokenKey}`
+			await Promise.all([kv.delete(tokenKey), kv.delete(tsKey)])
+			logger.info('Cleared stale token and timestamp from KV', {
+				tokenKey,
+			})
 		},
 	}
 }

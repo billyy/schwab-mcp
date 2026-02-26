@@ -218,6 +218,7 @@ app.get('/callback', async (c) => {
 
 		const saveToken = async (tokenData: TokenData) => {
 			await kvToken.save(getInitialTokenIds(), tokenData)
+			await kvToken.saveTimestamp(getInitialTokenIds())
 		}
 
 		const loadToken = async (): Promise<TokenData | null> => {
@@ -308,6 +309,7 @@ app.get('/callback', async (c) => {
 			if (currentTokenData) {
 				// Save under schwabUserId key
 				await kvToken.save({ schwabUserId: userIdFromSchwab }, currentTokenData)
+				await kvToken.saveTimestamp({ schwabUserId: userIdFromSchwab })
 				oauthLogger.info('Token migrated to schwabUserId key', {
 					fromKeyPrefix: sanitizeKeyForLog(
 						kvToken.kvKey({ clientId: clientIdFromState }),

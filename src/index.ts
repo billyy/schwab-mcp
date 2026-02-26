@@ -20,6 +20,7 @@ import {
 	ENVIRONMENTS,
 	CONTENT_TYPES,
 	APP_SERVER_NAME,
+	REFRESH_TOKEN_TTL_SECONDS,
 } from './shared/constants'
 import { makeKvTokenStore, type TokenIdentifiers } from './shared/kvTokenStore'
 import { logger, buildLogger, type PinoLogLevel } from './shared/log'
@@ -109,9 +110,11 @@ export class MyMCP extends DurableMCP<MyMCPProps, Env> {
 
 			// Token save function uses KV store exclusively
 			const saveTokenForETM = async (tokenSet: TokenData) => {
-				await kvToken.save(getTokenIds(), tokenSet)
+				const tokenIds = getTokenIds()
+				await kvToken.save(tokenIds, tokenSet)
+				await kvToken.saveTimestamp(tokenIds)
 				this.mcpLogger.debug('ETM: Token save to KV complete', {
-					keyPrefix: sanitizeKeyForLog(kvToken.kvKey(getTokenIds())),
+					keyPrefix: sanitizeKeyForLog(kvToken.kvKey(tokenIds)),
 				})
 			}
 
@@ -128,6 +131,19 @@ export class MyMCP extends DurableMCP<MyMCPProps, Env> {
 				this.mcpLogger.debug('ETM: Token load from KV complete', {
 					keyPrefix: sanitizeKeyForLog(kvToken.kvKey(tokenIds)),
 				})
+
+				if (tokenData) {
+					const stale = await kvToken.isTokenStale(tokenIds)
+					if (stale) {
+						this.mcpLogger.warn(
+							'Refresh token is stale (>7 days), clearing token to trigger re-auth',
+							{ keyPrefix: sanitizeKeyForLog(kvToken.kvKey(tokenIds)) },
+						)
+						await kvToken.clearToken(tokenIds)
+						return null
+					}
+				}
+
 				return tokenData
 			}
 
@@ -222,6 +238,16 @@ export class MyMCP extends DurableMCP<MyMCPProps, Env> {
 								message: `Successfully executed ${spec.name}`,
 							})
 						} catch (error) {
+							// Clear stale tokens on 401 so next connection triggers re-auth
+							const status =
+								(error as any)?.status ?? (error as any)?.httpStatus
+							if (status === 401) {
+								this.mcpLogger.warn(
+									'Received 401 from Schwab API, clearing token to trigger re-auth',
+									{ tool: spec.name },
+								)
+								await kvToken.clearToken(getTokenIds())
+							}
 							return toolError(error, { source: spec.name })
 						}
 					},
@@ -343,7 +369,7 @@ export class MyMCP extends DurableMCP<MyMCPProps, Env> {
 	}
 }
 
-export default new OAuthProvider({
+const oauthProvider = new OAuthProvider({
 	apiRoute: API_ENDPOINTS.SSE,
 	apiHandler: MyMCP.mount(API_ENDPOINTS.SSE) as any, // Cast remains due to library typing
 	defaultHandler: SchwabHandler as any, // Cast remains
@@ -351,3 +377,61 @@ export default new OAuthProvider({
 	tokenEndpoint: API_ENDPOINTS.TOKEN,
 	clientRegistrationEndpoint: API_ENDPOINTS.REGISTER,
 })
+
+/**
+ * Clears stale OAuth grants from KV when Schwab refresh tokens have expired (>7 days).
+ * This forces the MCP client to re-authenticate through the full Schwab OAuth flow.
+ */
+async function clearStaleGrant(
+	kv: KVNamespace,
+	authHeader: string | null,
+): Promise<void> {
+	if (!authHeader?.startsWith('Bearer ')) return
+
+	const token = authHeader.substring(7)
+	const parts = token.split(':')
+	if (parts.length !== 3) return
+
+	const [userId, grantId] = parts
+	const grantKey = `grant:${userId}:${grantId}`
+
+	try {
+		const grant = await kv.get(grantKey, { type: 'json' }) as {
+			createdAt?: number
+		} | null
+		if (!grant?.createdAt) return
+
+		const age = Math.floor(Date.now() / 1000) - grant.createdAt
+		if (age > REFRESH_TOKEN_TTL_SECONDS) {
+			logger.warn(
+				'OAuth grant is stale (>7 days), clearing to trigger Schwab re-auth',
+				{ grantKey, ageSeconds: age },
+			)
+			await kv.delete(grantKey)
+		}
+	} catch (error) {
+		logger.warn('Failed to check/clear stale grant', {
+			error: error instanceof Error ? error.message : String(error),
+		})
+	}
+}
+
+export default {
+	async fetch(
+		request: Request,
+		env: Env & { MCP_OBJECT: DurableObjectNamespace },
+		ctx: ExecutionContext,
+	) {
+		const url = new URL(request.url)
+		if (
+			url.pathname === API_ENDPOINTS.SSE ||
+			url.pathname === API_ENDPOINTS.TOKEN
+		) {
+			await clearStaleGrant(
+				env.OAUTH_KV,
+				request.headers.get('Authorization'),
+			)
+		}
+		return (oauthProvider as any).fetch(request, env, ctx)
+	},
+} satisfies ExportedHandler<Env & { MCP_OBJECT: DurableObjectNamespace }>
