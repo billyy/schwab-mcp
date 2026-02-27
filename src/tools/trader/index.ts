@@ -96,12 +96,18 @@ export const toolSpecs = [
 			const hashByNumber = Object.fromEntries(
 				accountNumbers.map((a) => [a.accountNumber, a.hashValue]),
 			)
-			const accountSummaries = accounts.map((acc) => ({
-				...acc.securitiesAccount,
-				hashValue: hashByNumber[acc.securitiesAccount.accountNumber],
-			}))
 			const displayMap = await buildAccountDisplayMap(c)
-			return scrubAccountIdentifiers(accountSummaries, displayMap)
+			const scrubbed = scrubAccountIdentifiers(
+				accounts.map((acc) => acc.securitiesAccount),
+				displayMap,
+			) as Record<string, unknown>[]
+			// Re-attach hashValue after scrubbing so AI can target specific accounts
+			return scrubbed.map((acc, i) => ({
+				...acc,
+				hashValue: accounts[i]?.securitiesAccount?.accountNumber
+					? hashByNumber[accounts[i].securitiesAccount.accountNumber]
+					: undefined,
+			}))
 		},
 	}),
 	createToolSpec({
