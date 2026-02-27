@@ -87,11 +87,18 @@ export const toolSpecs = [
 			logger.info('[getAccounts] Fetching accounts', {
 				showPositions: p?.fields,
 			})
-			const accounts = await c.trader.accounts.getAccounts({
-				queryParams: { fields: p?.fields },
-			})
+			const [accounts, accountNumbers] = await Promise.all([
+				c.trader.accounts.getAccounts({
+					queryParams: { fields: p?.fields },
+				}),
+				c.trader.accounts.getAccountNumbers(),
+			])
+			const hashByNumber = Object.fromEntries(
+				accountNumbers.map((a) => [a.accountNumber, a.hashValue]),
+			)
 			const accountSummaries = accounts.map((acc) => ({
 				...acc.securitiesAccount,
+				hashValue: hashByNumber[acc.securitiesAccount.accountNumber],
 			}))
 			const displayMap = await buildAccountDisplayMap(c)
 			return scrubAccountIdentifiers(accountSummaries, displayMap)
