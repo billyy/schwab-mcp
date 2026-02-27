@@ -81,7 +81,8 @@ function withOrderAliases(schema: z.ZodObject<any>) {
 export const toolSpecs = [
 	createToolSpec({
 		name: 'getAccounts',
-		description: 'Get accounts',
+		description:
+			'List all accounts with summary info. Returns account display name, type, hashValue (use with getAccount for details), and current balances. Does not include positions — use getAccount with a specific hashValue for full details.',
 		schema: GetAccountsParams,
 		call: async (c, p) => {
 			logger.info('[getAccounts] Fetching accounts', {
@@ -97,17 +98,17 @@ export const toolSpecs = [
 				accountNumbers.map((a) => [a.accountNumber, a.hashValue]),
 			)
 			const displayMap = await buildAccountDisplayMap(c)
-			const scrubbed = scrubAccountIdentifiers(
-				accounts.map((acc) => acc.securitiesAccount),
-				displayMap,
-			) as Record<string, unknown>[]
-			// Re-attach hashValue after scrubbing so AI can target specific accounts
-			return scrubbed.map((acc, i) => ({
-				...acc,
-				hashValue: accounts[i]?.securitiesAccount?.accountNumber
-					? hashByNumber[accounts[i].securitiesAccount.accountNumber]
-					: undefined,
-			}))
+			return accounts.map((acc) => {
+				const sa = acc.securitiesAccount
+				const display = displayMap[sa.accountNumber] ?? sa.accountNumber
+				const hashValue = hashByNumber[sa.accountNumber]
+				return {
+					accountDisplay: display,
+					hashValue,
+					type: sa.type,
+					currentBalances: sa.currentBalances,
+				}
+			})
 		},
 	}),
 	createToolSpec({
