@@ -51,14 +51,27 @@ function withAliases(zodType: z.ZodTypeAny, aliases: Record<string, string>) {
 	)
 }
 
+/** Coerce string to number if needed (mcporter CLI sends all values as strings) */
+function coerceNumber(val: unknown): unknown {
+	if (typeof val === 'string' && val.trim() !== '') {
+		const n = Number(val)
+		if (!isNaN(n)) return n
+	}
+	return val
+}
+
 /**
  * Wrap an order schema (PlaceOrderParams or ReplaceOrderParams) with alias
- * normalization so the MCP SDK accepts common trading abbreviations like
- * GTC, LMT, BTO, etc. before Zod enum validation runs.
+ * normalization and numeric coercion so the MCP SDK accepts common trading
+ * abbreviations like GTC, LMT, BTO, etc. and string-encoded numbers from
+ * CLI tools before Zod validation runs.
  */
 function withOrderAliases(schema: z.ZodObject<any>) {
 	return z.object({
 		...schema.shape,
+		// Coerce top-level numeric fields that CLI tools may send as strings
+		price: z.preprocess(coerceNumber, schema.shape.price),
+		quantity: z.preprocess(coerceNumber, schema.shape.quantity),
 		duration: withAliases(schema.shape.duration, DURATION_ALIASES),
 		orderType: withAliases(schema.shape.orderType, ORDER_TYPE_ALIASES),
 		orderLegCollection: z.preprocess(
@@ -66,11 +79,18 @@ function withOrderAliases(schema: z.ZodObject<any>) {
 				if (!Array.isArray(val)) return val
 				return val.map((leg: any) => {
 					if (!leg || typeof leg !== 'object') return leg
-					const instr = leg.instruction
-					if (typeof instr === 'string' && INSTRUCTION_ALIASES[instr]) {
-						return { ...leg, instruction: INSTRUCTION_ALIASES[instr] }
+					// Coerce leg quantity from string to number
+					const coerced = { ...leg }
+					if (typeof coerced.quantity === 'string') {
+						const n = Number(coerced.quantity)
+						if (!isNaN(n)) coerced.quantity = n
 					}
-					return leg
+					// Normalize instruction aliases
+					const instr = coerced.instruction
+					if (typeof instr === 'string' && INSTRUCTION_ALIASES[instr]) {
+						coerced.instruction = INSTRUCTION_ALIASES[instr]
+					}
+					return coerced
 				})
 			},
 			schema.shape.orderLegCollection,
