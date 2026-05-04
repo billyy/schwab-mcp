@@ -367,6 +367,18 @@ export class MyMCP extends DurableMCP<MyMCPProps, Env> {
 		await this.onReconnect()
 		return await super.onSSE(event)
 	}
+
+	async onMessage(request: Request) {
+		if (!(this as any).transport) {
+			this.mcpLogger.warn(
+				'POST /sse/message received with no active transport (DO evicted or restarted); instructing client to reconnect',
+			)
+			return new Response('SSE session expired, please reconnect', {
+				status: 410,
+			})
+		}
+		return await super.onMessage(request)
+	}
 }
 
 const oauthProvider = new OAuthProvider({
