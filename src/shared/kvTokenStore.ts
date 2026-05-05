@@ -55,9 +55,11 @@ export function makeKvTokenStore<T = any>(kv: KVNamespace): KvTokenStore<T> {
 			fromIds: TokenIdentifiers,
 			toIds: TokenIdentifiers,
 		) => {
+			const sourceExists = await sdkStore.load(fromIds)
+			if (!sourceExists) return
 			const success = await sdkStore.migrate(fromIds, toIds)
 			if (!success) {
-				logger.warn('Token migration was not needed or failed', {
+				logger.warn('Token migration failed', {
 					from: sdkStore.generateKey(fromIds),
 					to: sdkStore.generateKey(toIds),
 				})
