@@ -24,6 +24,13 @@ export interface KvTokenStore<T = any> {
 	saveTimestamp(ids: TokenIdentifiers): Promise<void>
 	isTokenStale(ids: TokenIdentifiers): Promise<boolean>
 	clearToken(ids: TokenIdentifiers): Promise<void>
+	/**
+	 * Load the most recently written non-stale token regardless of its key.
+	 * Needed because Schwab rotates schwabUserId (schwabClientCorrelId) on
+	 * every re-auth, so the refresh automation writes a NEW token:<id> key
+	 * each run while existing sessions still look up their old key.
+	 */
+	loadFreshest(): Promise<T | null>
 }
 
 /**
@@ -87,6 +94,34 @@ export function makeKvTokenStore<T = any>(kv: KVNamespace): KvTokenStore<T> {
 			logger.info('Cleared stale token and timestamp from KV', {
 				tokenKey,
 			})
+		},
+		loadFreshest: async () => {
+			// 'token_ts:' does not share the 'token:' prefix, so this lists tokens only
+			const list = await (kv as any).list({ prefix: TOKEN_KEY_PREFIX })
+			let best: { key: string; ts: number } | null = null
+			for (const entry of list.keys ?? []) {
+				const ts = Number(
+					await kv.get(`${TOKEN_TIMESTAMP_KEY_PREFIX}${entry.name}`),
+				)
+				if (!Number.isFinite(ts) || ts <= 0) continue
+				if (!best || ts > best.ts) best = { key: entry.name, ts }
+			}
+			if (!best) return null
+			if (Date.now() - best.ts > REFRESH_TOKEN_TTL_MS) {
+				logger.warn('Freshest KV token is stale (>7 days)', { key: best.key })
+				return null
+			}
+			const raw = await kv.get(best.key)
+			if (!raw) return null
+			logger.info('Loaded freshest KV token as fallback', {
+				key: best.key,
+				ageMinutes: Math.round((Date.now() - best.ts) / 60000),
+			})
+			try {
+				return JSON.parse(raw) as T
+			} catch {
+				return null
+			}
 		},
 	}
 }

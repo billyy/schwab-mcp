@@ -4,6 +4,8 @@ import defaultConfig from '@epic-web/config/eslint'
 export default [
 	...defaultConfig,
 	{
-		ignores: ['./.wrangler/**'],
+		// automation/ is a standalone toolchain (own package.json, no shared
+		// tsconfig); schwab-bridge.js is a legacy stdio bridge kept for reference
+		ignores: ['./.wrangler/**', './automation/**', './schwab-bridge.js'],
 	},
 ]

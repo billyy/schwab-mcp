@@ -13,89 +13,39 @@ import {
 	GetTransactionsParams,
 	GetTransactionByIdParams,
 	GetUserPreferenceParams,
+	type SchwabApiClient,
 } from '@sudowealth/schwab-api'
-import { z } from 'zod'
 import { logger } from '../../shared/log'
+import { withOrderAliases } from '../../shared/orderAliases'
 import { createToolSpec } from '../types'
 
 /**
- * Common trading abbreviations that AI models tend to use.
- * Maps abbreviations → Schwab's full enum values.
+ * Resolve a caller-supplied account identifier to the CURRENT hashValue.
+ * Accepts a current hashValue, a plain account number, or a display name.
+ *
+ * Account hashValues rotate whenever the OAuth session is re-established
+ * (e.g. the twice-weekly automation refresh), so identifiers cached by a
+ * caller mid-conversation go stale. Re-resolving on every call makes all
+ * account-scoped tools immune; when nothing matches, the error tells the
+ * caller how to recover.
  */
-const DURATION_ALIASES: Record<string, string> = {
-	GTC: 'GOOD_TILL_CANCEL',
-	FOK: 'FILL_OR_KILL',
-	IOC: 'IMMEDIATE_OR_CANCEL',
-}
-
-const ORDER_TYPE_ALIASES: Record<string, string> = {
-	MKT: 'MARKET',
-	LMT: 'LIMIT',
-	STP: 'STOP',
-	STP_LMT: 'STOP_LIMIT',
-}
-
-const INSTRUCTION_ALIASES: Record<string, string> = {
-	BTO: 'BUY_TO_OPEN',
-	BTC: 'BUY_TO_CLOSE',
-	STO: 'SELL_TO_OPEN',
-	STC: 'SELL_TO_CLOSE',
-}
-
-/** Wrap a Zod type with preprocessing to accept common aliases */
-function withAliases(zodType: z.ZodTypeAny, aliases: Record<string, string>) {
-	return z.preprocess(
-		(val) =>
-			typeof val === 'string' && aliases[val] ? aliases[val] : val,
-		zodType,
+async function resolveAccountHash(
+	c: SchwabApiClient,
+	input: string,
+): Promise<string> {
+	const accounts = await c.trader.accounts.getAccountNumbers()
+	const byHash = accounts.find((a) => a.hashValue === input)
+	if (byHash) return byHash.hashValue
+	const byPlain = accounts.find((a) => a.accountNumber === input)
+	if (byPlain) return byPlain.hashValue
+	const displayMap = await buildAccountDisplayMap(c)
+	const byDisplay = accounts.find(
+		(a) => displayMap[a.accountNumber] === input,
 	)
-}
-
-/** Coerce string to number if needed (mcporter CLI sends all values as strings) */
-function coerceNumber(val: unknown): unknown {
-	if (typeof val === 'string' && val.trim() !== '') {
-		const n = Number(val)
-		if (!isNaN(n)) return n
-	}
-	return val
-}
-
-/**
- * Wrap an order schema (PlaceOrderParams or ReplaceOrderParams) with alias
- * normalization and numeric coercion so the MCP SDK accepts common trading
- * abbreviations like GTC, LMT, BTO, etc. and string-encoded numbers from
- * CLI tools before Zod validation runs.
- */
-function withOrderAliases(schema: z.ZodObject<any>) {
-	return z.object({
-		...schema.shape,
-		// Coerce top-level numeric fields that CLI tools may send as strings
-		price: z.preprocess(coerceNumber, schema.shape.price),
-		quantity: z.preprocess(coerceNumber, schema.shape.quantity),
-		duration: withAliases(schema.shape.duration, DURATION_ALIASES),
-		orderType: withAliases(schema.shape.orderType, ORDER_TYPE_ALIASES),
-		orderLegCollection: z.preprocess(
-			(val) => {
-				if (!Array.isArray(val)) return val
-				return val.map((leg: any) => {
-					if (!leg || typeof leg !== 'object') return leg
-					// Coerce leg quantity from string to number
-					const coerced = { ...leg }
-					if (typeof coerced.quantity === 'string') {
-						const n = Number(coerced.quantity)
-						if (!isNaN(n)) coerced.quantity = n
-					}
-					// Normalize instruction aliases
-					const instr = coerced.instruction
-					if (typeof instr === 'string' && INSTRUCTION_ALIASES[instr]) {
-						coerced.instruction = INSTRUCTION_ALIASES[instr]
-					}
-					return coerced
-				})
-			},
-			schema.shape.orderLegCollection,
-		),
-	})
+	if (byDisplay) return byDisplay.hashValue
+	throw new Error(
+		'Account identifier not recognized — account hashValues rotate on every re-authentication, so cached values go stale. Call getAccounts to get the current hashValues, then retry with the new value.',
+	)
 }
 
 export const toolSpecs = [
@@ -153,7 +103,7 @@ export const toolSpecs = [
 		schema: GetAccountByNumberParams,
 		call: async (c, p) => {
 			const account = await c.trader.accounts.getAccountByNumber({
-				pathParams: { accountNumber: p.accountNumber },
+				pathParams: { accountNumber: await resolveAccountHash(c, p.accountNumber) },
 				queryParams: { fields: p.fields },
 			})
 			const displayMap = await buildAccountDisplayMap(c)
@@ -180,7 +130,7 @@ export const toolSpecs = [
 		schema: GetOrdersByAccountParams,
 		call: async (c, p) => {
 			const orders = await c.trader.orders.getOrdersByAccount({
-				pathParams: { accountNumber: p.accountNumber },
+				pathParams: { accountNumber: await resolveAccountHash(c, p.accountNumber) },
 				queryParams: p,
 			})
 			const displayMap = await buildAccountDisplayMap(c)
@@ -205,7 +155,7 @@ export const toolSpecs = [
 			logger.debug('[placeOrder] Full order body', { body: JSON.stringify(orderBody) })
 			try {
 				const order = await c.trader.orders.placeOrderForAccount({
-					pathParams: { accountNumber },
+					pathParams: { accountNumber: await resolveAccountHash(c, accountNumber) },
 					body: orderBody as typeof p,
 				})
 				logger.info('[placeOrder] Order placed successfully', { order })
@@ -230,7 +180,10 @@ export const toolSpecs = [
 		schema: GetOrderByIdParams,
 		call: async (c, p) => {
 			const order = await c.trader.orders.getOrderByOrderId({
-				pathParams: { accountNumber: p.accountNumber, orderId: p.orderId },
+				pathParams: {
+					accountNumber: await resolveAccountHash(c, p.accountNumber),
+					orderId: p.orderId,
+				},
 			})
 			const displayMap = await buildAccountDisplayMap(c)
 			return scrubAccountIdentifiers(order, displayMap)
@@ -242,7 +195,10 @@ export const toolSpecs = [
 		schema: CancelOrderParams,
 		call: async (c, p) => {
 			const order = await c.trader.orders.cancelOrder({
-				pathParams: { accountNumber: p.accountNumber, orderId: p.orderId },
+				pathParams: {
+					accountNumber: await resolveAccountHash(c, p.accountNumber),
+					orderId: p.orderId,
+				},
 			})
 			const displayMap = await buildAccountDisplayMap(c)
 			return scrubAccountIdentifiers(order, displayMap)
@@ -256,7 +212,10 @@ export const toolSpecs = [
 		call: async (c, p) => {
 			const { accountNumber, orderId, ...orderBody } = p
 			const order = await c.trader.orders.replaceOrder({
-				pathParams: { accountNumber, orderId },
+				pathParams: {
+					accountNumber: await resolveAccountHash(c, accountNumber),
+					orderId,
+				},
 				body: orderBody as typeof p,
 			})
 			const displayMap = await buildAccountDisplayMap(c)

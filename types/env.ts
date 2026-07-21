@@ -52,6 +52,31 @@ export interface Env {
 	 * Tools to enable: "all", "core" (default), "tool1,tool2", "+tool1" (add to core), "-tool1" (remove from core)
 	 */
 	ENABLED_TOOLS?: string
+
+	/**
+	 * Shared secret for the POST /orders endpoint. If unset, the endpoint is disabled.
+	 */
+	ORDER_API_KEY?: string
+
+	/**
+	 * Schwab user ID used to derive the KV token key for the /orders endpoint
+	 */
+	SCHWAB_USER_ID?: string
+
+	/**
+	 * Maximum notional value (price x quantity) per order in USD
+	 */
+	ORDER_MAX_NOTIONAL?: string
+
+	/**
+	 * Comma-separated list of symbols allowed for /orders. If unset, all symbols allowed.
+	 */
+	ORDER_SYMBOL_ALLOWLIST?: string
+
+	/**
+	 * Maximum number of orders per UTC day via /orders (default: 10)
+	 */
+	ORDER_DAILY_CAP?: string
 }
 
 /**
@@ -105,4 +130,29 @@ export interface ValidatedEnv {
 	 * Tools to enable: "all", "core" (default), "tool1,tool2", "+tool1" (add to core), "-tool1" (remove from core)
 	 */
 	readonly ENABLED_TOOLS: string
+
+	/**
+	 * Shared secret for the POST /orders endpoint. If unset, the endpoint is disabled.
+	 */
+	readonly ORDER_API_KEY?: string
+
+	/**
+	 * Schwab user ID used to derive the KV token key for the /orders endpoint
+	 */
+	readonly SCHWAB_USER_ID?: string
+
+	/**
+	 * Maximum notional value (price x quantity) per order in USD
+	 */
+	readonly ORDER_MAX_NOTIONAL?: number
+
+	/**
+	 * Comma-separated list of symbols allowed for /orders. If unset, all symbols allowed.
+	 */
+	readonly ORDER_SYMBOL_ALLOWLIST?: string
+
+	/**
+	 * Maximum number of orders per UTC day via /orders (default: 10)
+	 */
+	readonly ORDER_DAILY_CAP: number
 }

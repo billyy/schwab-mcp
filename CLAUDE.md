@@ -217,6 +217,18 @@ Run `./test-oauth.sh` for a testing checklist and common issues.
 - Includes `src/**/*.ts` and `types/**/*.d.ts`
 - Types for Cloudflare Workers in `types/env.ts` and `types/worker-configuration.d.ts`
 
+## Programmatic Orders (no LLM)
+
+`POST /orders` (`src/orders/handler.ts`) is an API-key-authed endpoint for
+placing orders without any LLM, driven by `cli/schwab-order.mjs`. Preview →
+confirm → submit, with server-side guardrails (symbol allowlist, max notional,
+daily cap, duplicate detection, KV audit log). Disabled unless `ORDER_API_KEY`
+and `SCHWAB_USER_ID` secrets are set. Docs:
+
+- `docs/ORDER_CLI.md` — CLI setup, order JSON format, guardrails, troubleshooting
+- `docs/TRADING_AGENT.md` — optional instructions for a read-only Claude agent
+  that drafts order proposals for the CLI to execute
+
 ## GitHub Actions
 
 The `.github/workflows/deploy.yml` workflow:

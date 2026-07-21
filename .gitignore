@@ -174,3 +174,9 @@ wrangler.deploy.jsonc
 .dev.vars
 .dev.vars.backup
 .wrangler/
+
+# Claude Code local settings
+.claude/
+
+# Generated launchd wrapper app (rebuild: see automation/README.md)
+automation/*.app

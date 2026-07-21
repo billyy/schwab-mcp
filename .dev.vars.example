@@ -23,3 +23,15 @@ ENVIRONMENT=development
 #                 getTransactions, getTransaction, getQuoteBySymbolId, searchInstruments, getInstrumentByCusip,
 #                 getMarketHours, getMarketHoursByMarketId, getMovers, getOptionExpirationChain
 ENABLED_TOOLS=core
+
+# Optional: Programmatic order endpoint (POST /orders) — disabled unless BOTH are set.
+# ORDER_API_KEY: shared secret for the CLI (generate: openssl rand -hex 32, min 32 chars)
+# SCHWAB_USER_ID: the Schwab user ID whose KV token the endpoint uses
+#   (find it: npx wrangler kv:key list --namespace-id=<ID> — the token:<id> key)
+# ORDER_API_KEY=generate_with_openssl_rand_hex_32
+# SCHWAB_USER_ID=your_schwab_user_id
+
+# Optional: server-side order limits
+# ORDER_MAX_NOTIONAL=10000        # max price x quantity per order, USD (options x100); blocks MARKET orders when set
+# ORDER_SYMBOL_ALLOWLIST=AAPL,SPY # only these underlyings tradeable via /orders
+# ORDER_DAILY_CAP=10              # max submitted orders per UTC day (default 10)

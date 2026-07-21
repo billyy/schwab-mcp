@@ -1,5 +1,6 @@
 import OAuthProvider from '@cloudflare/workers-oauth-provider'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { type JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
 import {
 	createApiClient,
 	sanitizeKeyForLog,
@@ -12,6 +13,7 @@ import { DurableMCP } from 'workers-mcp'
 import { type ValidatedEnv } from '../types/env'
 import { SchwabHandler, initializeSchwabAuthClient } from './auth'
 import { getConfig } from './config'
+import { handleOrdersRequest } from './orders/handler'
 import {
 	APP_NAME,
 	API_ENDPOINTS,
@@ -26,6 +28,7 @@ import { makeKvTokenStore, type TokenIdentifiers } from './shared/kvTokenStore'
 import { logger, buildLogger, type PinoLogLevel } from './shared/log'
 import { logOnlyInDevelopment } from './shared/secureLogger'
 import { createTool, toolError, toolSuccess } from './shared/toolBuilder'
+import { HttpStreamTransport, mcpHttpHandler } from './streamableHttp'
 import {
 	allToolSpecs,
 	type ToolSpec,
@@ -49,6 +52,7 @@ export class MyMCP extends DurableMCP<MyMCPProps, Env> {
 	private client!: SchwabApiClient
 	private validatedConfig!: ValidatedEnv
 	private mcpLogger = logger.child(LOGGER_CONTEXTS.MCP_DO)
+	private httpTransport?: HttpStreamTransport
 
 	server = new McpServer({
 		name: APP_NAME,
@@ -127,7 +131,7 @@ export class MyMCP extends DurableMCP<MyMCPProps, Env> {
 					expectedKeyPrefix: sanitizeKeyForLog(kvToken.kvKey(tokenIds)),
 				})
 
-				const tokenData = await kvToken.load(tokenIds)
+				let tokenData = await kvToken.load(tokenIds)
 				this.mcpLogger.debug('ETM: Token load from KV complete', {
 					keyPrefix: sanitizeKeyForLog(kvToken.kvKey(tokenIds)),
 				})
@@ -140,7 +144,24 @@ export class MyMCP extends DurableMCP<MyMCPProps, Env> {
 							{ keyPrefix: sanitizeKeyForLog(kvToken.kvKey(tokenIds)) },
 						)
 						await kvToken.clearToken(tokenIds)
-						return null
+						tokenData = null
+					}
+				}
+
+				// Fallback: schwabUserId rotates on every re-auth, so the refresh
+				// automation writes fresh tokens under NEW keys this session's ids
+				// can't see. Adopt the freshest token in KV and copy it to our key
+				// so subsequent ETM saves land somewhere consistent.
+				if (!tokenData) {
+					const freshest = await kvToken.loadFreshest()
+					if (freshest) {
+						this.mcpLogger.info(
+							'Own token key empty/stale — adopting freshest KV token',
+							{ keyPrefix: sanitizeKeyForLog(kvToken.kvKey(tokenIds)) },
+						)
+						await kvToken.save(tokenIds, freshest)
+						await kvToken.saveTimestamp(tokenIds)
+						tokenData = freshest
 					}
 				}
 
@@ -379,11 +400,38 @@ export class MyMCP extends DurableMCP<MyMCPProps, Env> {
 		}
 		return await super.onMessage(request)
 	}
+
+	/**
+	 * Streamable HTTP entry point. Invoked by the /mcp ExportedHandler via DO RPC.
+	 * Lazily initializes the DO and connects a single shared HttpStreamTransport
+	 * to the McpServer, then dispatches the inbound JSON-RPC message.
+	 */
+	async handleStreamableHttp(
+		props: MyMCPProps,
+		message: JSONRPCMessage,
+	): Promise<JSONRPCMessage | null> {
+		if (!(this as any).initRun) {
+			this.props = { ...this.props, ...props }
+			;(this as any).initRun = true
+			await this.init()
+		} else if (props && Object.keys(props).length > 0) {
+			this.props = { ...this.props, ...props }
+		}
+
+		if (!this.httpTransport) {
+			this.httpTransport = new HttpStreamTransport()
+			await this.server.connect(this.httpTransport)
+		}
+
+		return await this.httpTransport.dispatch(message)
+	}
 }
 
 const oauthProvider = new OAuthProvider({
-	apiRoute: API_ENDPOINTS.SSE,
-	apiHandler: MyMCP.mount(API_ENDPOINTS.SSE) as any, // Cast remains due to library typing
+	apiHandlers: {
+		[API_ENDPOINTS.SSE]: MyMCP.mount(API_ENDPOINTS.SSE) as any,
+		[API_ENDPOINTS.MCP]: mcpHttpHandler as any,
+	},
 	defaultHandler: SchwabHandler as any, // Cast remains
 	authorizeEndpoint: API_ENDPOINTS.AUTHORIZE,
 	tokenEndpoint: API_ENDPOINTS.TOKEN,
@@ -435,8 +483,15 @@ export default {
 		ctx: ExecutionContext,
 	) {
 		const url = new URL(request.url)
+
+		// Programmatic order endpoint — API-key authed, bypasses the OAuth provider
+		if (url.pathname === API_ENDPOINTS.ORDERS) {
+			return handleOrdersRequest(request, env)
+		}
+
 		if (
 			url.pathname === API_ENDPOINTS.SSE ||
+			url.pathname === API_ENDPOINTS.MCP ||
 			url.pathname === API_ENDPOINTS.TOKEN
 		) {
 			await clearStaleGrant(

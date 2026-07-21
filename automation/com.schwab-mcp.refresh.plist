@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.schwab-mcp.refresh</string>
+
+  <!-- Must be the compiled app-bundle binary (not bash): macOS attributes
+       Full Disk Access (needed to read MFA codes from Messages) to the
+       program binary, and script interpreters don't hold the grant. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/Billy/git/schwab-mcp/automation/SchwabRefresh2.app/Contents/MacOS/applet</string>
+  </array>
+
+  <!-- Twice weekly: Sunday and Wednesday 03:00. Refresh tokens die after
+       7 days; the second slot keeps a failed run from expiring the token. -->
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict>
+      <key>Weekday</key><integer>0</integer>
+      <key>Hour</key><integer>3</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <dict>
+      <key>Weekday</key><integer>3</integer>
+      <key>Hour</key><integer>3</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>WORKER_URL</key>
+    <string>https://obsolescent-corporately-easter.ngrok-free.dev</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/Billy/Library/Logs/schwab-mcp-refresh.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/Billy/Library/Logs/schwab-mcp-refresh.log</string>
+
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>

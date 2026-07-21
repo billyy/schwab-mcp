@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.schwab-mcp.ngrok</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/ngrok</string>
+    <string>http</string>
+    <string>--domain=obsolescent-corporately-easter.ngrok-free.dev</string>
+    <string>8788</string>
+    <string>--log</string>
+    <string>stdout</string>
+  </array>
+
+  <!-- Start at login and restart on crash -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/Billy/Library/Logs/schwab-mcp-ngrok.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/Billy/Library/Logs/schwab-mcp-ngrok.log</string>
+</dict>
+</plist>

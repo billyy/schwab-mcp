@@ -1,0 +1,17 @@
+{
+  "name": "schwab-mcp-automation",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "refresh": "tsx refresh.ts",
+    "refresh:headed": "HEADED=1 tsx refresh.ts",
+    "install:browsers": "playwright install chromium"
+  },
+  "dependencies": {
+    "playwright": "^1.48.0",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "tsx": "^4.19.2"
+  }
+}

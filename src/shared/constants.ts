@@ -29,6 +29,7 @@ export const LOGGER_CONTEXTS = {
 	AUTH_CLIENT: 'auth-client',
 	STATE_UTILS: 'state-utils',
 	KV_TOKEN_STORE: 'kv-token-store',
+	ORDERS: 'orders',
 } as const
 
 /**
@@ -36,10 +37,12 @@ export const LOGGER_CONTEXTS = {
  */
 export const API_ENDPOINTS = {
 	SSE: '/sse',
+	MCP: '/mcp',
 	AUTHORIZE: '/authorize',
 	TOKEN: '/token',
 	CALLBACK: '/callback',
 	REGISTER: '/register',
+	ORDERS: '/orders',
 } as const
 
 /**
@@ -71,3 +74,11 @@ export const TOKEN_TIMESTAMP_KEY_PREFIX = 'token_ts:' as const
 export const TTL_31_DAYS = 31 * 24 * 60 * 60
 export const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000
 export const REFRESH_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60
+
+/**
+ * Orders Endpoint Constants
+ */
+export const SCHWAB_API_BASE_URL = 'https://api.schwabapi.com' as const
+export const ORDER_AUDIT_KEY_PREFIX = 'audit:order:' as const
+export const ORDER_COUNT_KEY_PREFIX = 'order_count:' as const
+export const ORDER_AUDIT_TTL_SECONDS = 90 * 24 * 60 * 60

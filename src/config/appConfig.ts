@@ -50,6 +50,44 @@ const envSchema = z.object({
 		.describe(
 			'Tools to enable: "all", "core" (default), "tool1,tool2", "+tool1,+tool2" (add to core), "-tool1" (remove from core)',
 		),
+
+	ORDER_API_KEY: z
+		.string()
+		.min(32, 'ORDER_API_KEY must be at least 32 characters')
+		.optional()
+		.describe(
+			'Shared secret for the POST /orders endpoint. If unset, the endpoint is disabled.',
+		),
+
+	SCHWAB_USER_ID: z
+		.string()
+		.min(1)
+		.optional()
+		.describe(
+			'Schwab user ID used to derive the KV token key for the /orders endpoint',
+		),
+
+	ORDER_MAX_NOTIONAL: z
+		.string()
+		.optional()
+		.transform((v) => (v ? Number(v) : undefined))
+		.pipe(z.number().positive().optional())
+		.describe('Maximum notional value (price x quantity) per order in USD'),
+
+	ORDER_SYMBOL_ALLOWLIST: z
+		.string()
+		.optional()
+		.describe(
+			'Comma-separated list of symbols allowed for /orders. If unset, all symbols allowed.',
+		),
+
+	ORDER_DAILY_CAP: z
+		.string()
+		.optional()
+		.default('10')
+		.transform((v) => Number(v))
+		.pipe(z.number().int().positive())
+		.describe('Maximum number of orders per UTC day via /orders'),
 })
 
 function buildConfigInternal(env: Env): ValidatedEnv {
