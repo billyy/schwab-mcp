@@ -77,6 +77,31 @@ export interface Env {
 	 * Maximum number of orders per UTC day via /orders (default: 10)
 	 */
 	ORDER_DAILY_CAP?: string
+
+	/**
+	 * Slack bot token (xoxb-...) used to post drift proposals with approve buttons
+	 */
+	SLACK_BOT_TOKEN?: string
+
+	/**
+	 * Slack app signing secret for verifying /slack/interactions requests
+	 */
+	SLACK_SIGNING_SECRET?: string
+
+	/**
+	 * Channel ID (C.../G...) where drift proposals are posted
+	 */
+	SLACK_CHANNEL_ID?: string
+
+	/**
+	 * Comma-separated Slack member IDs (U...) allowed to approve/reject proposals
+	 */
+	SLACK_APPROVER_IDS?: string
+
+	/**
+	 * Durable Object namespace for pending drift proposals
+	 */
+	PROPOSAL_STORE?: DurableObjectNamespace
 }
 
 /**
@@ -155,4 +180,24 @@ export interface ValidatedEnv {
 	 * Maximum number of orders per UTC day via /orders (default: 10)
 	 */
 	readonly ORDER_DAILY_CAP: number
+
+	/**
+	 * Slack bot token (xoxb-...) used to post drift proposals with approve buttons
+	 */
+	readonly SLACK_BOT_TOKEN?: string
+
+	/**
+	 * Slack app signing secret for verifying /slack/interactions requests
+	 */
+	readonly SLACK_SIGNING_SECRET?: string
+
+	/**
+	 * Channel ID (C.../G...) where drift proposals are posted
+	 */
+	readonly SLACK_CHANNEL_ID?: string
+
+	/**
+	 * Comma-separated Slack member IDs (U...) allowed to approve/reject proposals
+	 */
+	readonly SLACK_APPROVER_IDS?: string
 }

@@ -88,6 +88,31 @@ const envSchema = z.object({
 		.transform((v) => Number(v))
 		.pipe(z.number().int().positive())
 		.describe('Maximum number of orders per UTC day via /orders'),
+
+	SLACK_BOT_TOKEN: z
+		.string()
+		.startsWith('xoxb-', 'SLACK_BOT_TOKEN must be a bot token (xoxb-...)')
+		.optional()
+		.describe('Slack bot token used to post drift proposals with approve buttons'),
+
+	SLACK_SIGNING_SECRET: z
+		.string()
+		.min(16, 'SLACK_SIGNING_SECRET looks too short')
+		.optional()
+		.describe('Slack app signing secret for verifying /slack/interactions requests'),
+
+	SLACK_CHANNEL_ID: z
+		.string()
+		.regex(/^[CG][A-Z0-9]+$/, 'SLACK_CHANNEL_ID must be a channel ID like C0123ABC')
+		.optional()
+		.describe('Channel where drift proposals are posted'),
+
+	SLACK_APPROVER_IDS: z
+		.string()
+		.optional()
+		.describe(
+			'Comma-separated Slack member IDs (U...) allowed to approve/reject proposals',
+		),
 })
 
 function buildConfigInternal(env: Env): ValidatedEnv {

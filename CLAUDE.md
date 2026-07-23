@@ -229,6 +229,17 @@ and `SCHWAB_USER_ID` secrets are set. Docs:
 - `docs/TRADING_AGENT.md` — optional instructions for a read-only Claude agent
   that drafts order proposals for the CLI to execute
 
+## Drift Approval (Slack)
+
+`POST /proposals` (`src/proposals/handler.ts`) accepts a batch of orders from
+the Cowork drift task, previews them through the same guardrails, stores them
+in the `ProposalStore` Durable Object, and posts a Slack message with
+Approve/Reject buttons. `POST /slack/interactions`
+(`src/proposals/interactions.ts`) verifies Slack's signature + approver
+allowlist and executes approved batches via `src/proposals/executor.ts` —
+the identical LLM-free path `/orders` uses (shared in `src/orders/core.ts`).
+Disabled unless the `SLACK_*` secrets are set. Docs: `docs/DRIFT_APPROVAL.md`
+
 ## GitHub Actions
 
 The `.github/workflows/deploy.yml` workflow:
