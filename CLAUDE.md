@@ -244,8 +244,12 @@ Disabled unless the `SLACK_*` secrets are set. Docs: `docs/DRIFT_APPROVAL.md`
 
 The `.github/workflows/deploy.yml` workflow:
 1. Runs validation (`npm run validate`) on all PRs
-2. Auto-deploys to Cloudflare Workers on push to `main`
-3. Requires secrets: `CLOUDFLARE_API_TOKEN`, `OAUTH_KV_ID`
+2. Auto-deploys to Cloudflare Workers on push to `main` **only when** the
+   `CLOUDFLARE_API_TOKEN` and `OAUTH_KV_ID` repo secrets are set — they are
+   currently NOT set, so the deploy steps skip and only validation runs.
+   This deployment is local-only: `wrangler dev` behind a static ngrok
+   domain is the live worker. To re-enable CI deploys, see "GitHub Actions
+   Deployment" in README.md (set the two secrets; no workflow edits needed).
 
 ## Important Notes
 
