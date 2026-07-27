@@ -276,15 +276,22 @@ async function buildClient(
 	const kvToken = makeKvTokenStore(config.OAUTH_KV)
 	const tokenIds = { schwabUserId: config.SCHWAB_USER_ID }
 
-	// schwabUserId rotates per re-auth, so the static SCHWAB_USER_ID key goes
-	// stale after every automation refresh — fall back to the freshest token.
+	const adoptFreshest = async (): Promise<boolean> => {
+		const freshest = await kvToken.loadFreshest()
+		if (!freshest) return false
+		await kvToken.save(tokenIds, freshest)
+		await kvToken.saveTimestamp(tokenIds)
+		return true
+	}
+
+	// schwabUserId rotates per re-auth, so the SCHWAB_USER_ID key (which may be
+	// a static placeholder like "orders-static") is just an alias — on a miss,
+	// adopt the most recently written token.
+	let adopted = false
 	let existing = await kvToken.load(tokenIds)
 	if (!existing) {
-		existing = await kvToken.loadFreshest()
-		if (existing) {
-			await kvToken.save(tokenIds, existing)
-			await kvToken.saveTimestamp(tokenIds)
-		}
+		adopted = await adoptFreshest()
+		if (adopted) existing = await kvToken.load(tokenIds)
 	}
 	if (!existing) {
 		return {
@@ -295,16 +302,29 @@ async function buildClient(
 		}
 	}
 
-	const tokenManager = initializeSchwabAuthClient(
-		config,
-		config.SCHWAB_REDIRECT_URI,
-		() => kvToken.load(tokenIds),
-		async (tokenData) => {
-			await kvToken.save(tokenIds, tokenData)
-			await kvToken.saveTimestamp(tokenIds)
-		},
-	)
-	const initialized = await tokenManager.initialize()
+	const makeManager = () =>
+		initializeSchwabAuthClient(
+			config,
+			config.SCHWAB_REDIRECT_URI,
+			() => kvToken.load(tokenIds),
+			async (tokenData) => {
+				await kvToken.save(tokenIds, tokenData)
+				await kvToken.saveTimestamp(tokenIds)
+			},
+		)
+	let tokenManager = makeManager()
+	let initialized = await tokenManager.initialize()
+	if (!initialized && !adopted) {
+		// The alias key held a token whose refresh token has died (e.g. revoked
+		// by a re-auth) — self-heal by adopting the freshest token and retrying.
+		ordersLogger.warn(
+			'[orders] Token init failed from alias key; retrying with freshest KV token',
+		)
+		if (await adoptFreshest()) {
+			tokenManager = makeManager()
+			initialized = await tokenManager.initialize()
+		}
+	}
 	if (!initialized) {
 		return {
 			ok: false,

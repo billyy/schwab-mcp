@@ -143,6 +143,15 @@ The endpoints stay 503-disabled until all of `ORDER_API_KEY`,
 `SCHWAB_USER_ID`, and the four `SLACK_*` values are set (plus the
 `PROPOSAL_STORE` Durable Object binding, included in the wrangler configs).
 
+None of these values ever need updating after setup. In particular
+`SCHWAB_USER_ID` does NOT need to track Schwab's rotating user ID — it is
+only a stable alias for the KV token key. A static placeholder like
+`SCHWAB_USER_ID=orders-static` is fine: on a miss (or a dead token under the
+alias) the worker adopts the most recently written token automatically.
+Credential separation: the Slack app never sees `ORDER_API_KEY` (it can
+approve but not propose), and the Cowork task never sees the Slack secrets
+(it can propose but not approve).
+
 ## Local testing
 
 Slack cannot reach `wrangler dev`, so simulate its callbacks:
