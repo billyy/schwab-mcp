@@ -147,13 +147,26 @@ The same secrets from Quick Setup need to be set (see above).
 
 ### GitHub Actions Deployment
 
-For automated deployments, add these GitHub repository secrets:
+**Currently disabled** — this deployment runs local-only (a `wrangler dev`
+server exposed through a static ngrok domain), so the CI deploy steps skip
+themselves when the repository secrets below are absent. Pushes to `main`
+still run validation and stay green.
 
-1. **`CLOUDFLARE_API_TOKEN`**: Your Cloudflare API token
-2. **`OAUTH_KV_ID`**: Your KV namespace ID
+To re-enable automated Cloudflare deploys, add these GitHub repository
+secrets (no workflow changes needed — the deploy steps activate on the next
+push to `main`):
 
-The workflow handles validation and deployment when pushing to `main`.
-Cloudflare secrets must still be set via `wrangler secret`.
+1. **`CLOUDFLARE_API_TOKEN`**: Cloudflare dashboard → My Profile →
+   API Tokens → "Edit Cloudflare Workers" template
+   (`gh secret set CLOUDFLARE_API_TOKEN`)
+2. **`OAUTH_KV_ID`**: Your KV namespace ID — the `id` under `kv_namespaces`
+   in `wrangler.jsonc` (`gh secret set OAUTH_KV_ID`)
+
+The deployed worker also needs its runtime secrets set separately via
+`wrangler secret put` (Schwab/OAuth values, and `ORDER_API_KEY` +
+`SCHWAB_USER_ID` + the `SLACK_*` values if the orders/drift-approval
+endpoints should be live there). Remember to point the Slack app's
+interactivity request URL at whichever host is live.
 
 ### Testing with Inspector
 
