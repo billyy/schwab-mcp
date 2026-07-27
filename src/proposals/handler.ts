@@ -4,6 +4,7 @@ import { type Env, type ValidatedEnv } from '../../types/env'
 import { getConfig } from '../config'
 import {
 	OrderRequestSchema,
+	availableAccountDisplays,
 	checkAndIncrementDailyCap,
 	checkGuardrails,
 	checkOrderApiKey,
@@ -165,6 +166,7 @@ export async function handleProposalsRequest(
 		if (!accountHash) {
 			return jsonResponse(400, {
 				error: `Order ${index}: accountNumber does not match any account (plain or hashValue) on this login`,
+				availableAccounts: availableAccountDisplays(ctx),
 			})
 		}
 		const preview = await previewOne(ctx, accountHash, orderBody)

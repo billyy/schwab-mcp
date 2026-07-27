@@ -5,6 +5,7 @@ import { LOGGER_CONTEXTS } from '../shared/constants'
 import { logger } from '../shared/log'
 import {
 	OrderRequestSchema,
+	availableAccountDisplays,
 	checkGuardrails,
 	checkOrderApiKey,
 	createOrderContext,
@@ -99,6 +100,7 @@ export async function handleOrdersRequest(
 		return jsonResponse(400, {
 			error:
 				'accountNumber does not match any account (plain or hashValue) on this login',
+			availableAccounts: availableAccountDisplays(ctx),
 		})
 	}
 
