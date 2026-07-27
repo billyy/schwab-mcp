@@ -30,6 +30,7 @@ export const LOGGER_CONTEXTS = {
 	STATE_UTILS: 'state-utils',
 	KV_TOKEN_STORE: 'kv-token-store',
 	ORDERS: 'orders',
+	PROPOSALS: 'proposals',
 } as const
 
 /**
@@ -43,6 +44,8 @@ export const API_ENDPOINTS = {
 	CALLBACK: '/callback',
 	REGISTER: '/register',
 	ORDERS: '/orders',
+	PROPOSALS: '/proposals',
+	SLACK_INTERACTIONS: '/slack/interactions',
 } as const
 
 /**
@@ -82,3 +85,15 @@ export const SCHWAB_API_BASE_URL = 'https://api.schwabapi.com' as const
 export const ORDER_AUDIT_KEY_PREFIX = 'audit:order:' as const
 export const ORDER_COUNT_KEY_PREFIX = 'order_count:' as const
 export const ORDER_AUDIT_TTL_SECONDS = 90 * 24 * 60 * 60
+
+/**
+ * Drift Proposal Constants
+ */
+export const SLACK_API_BASE_URL = 'https://slack.com/api' as const
+export const PROPOSAL_AUDIT_KEY_PREFIX = 'audit:proposal:' as const
+export const PROPOSAL_EXPIRY_SECONDS = 4 * 60 * 60
+export const PROPOSAL_MAX_ORDERS = 10
+/** An `executing` proposal older than this is considered failed (evicted waitUntil) */
+export const PROPOSAL_EXECUTING_TIMEOUT_MS = 15 * 60 * 1000
+/** How long the ProposalStore DO retains terminal records before alarm purge */
+export const PROPOSAL_RETENTION_MS = 7 * 24 * 60 * 60 * 1000

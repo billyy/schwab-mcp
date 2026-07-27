@@ -20,6 +20,10 @@
 			"new_sqlite_classes": ["MyMCP"],
 			"tag": "v1",
 		},
+		{
+			"new_sqlite_classes": ["ProposalStore"],
+			"tag": "v2",
+		},
 	],
 	"durable_objects": {
 		"bindings": [
@@ -27,8 +31,15 @@
 				"class_name": "MyMCP",
 				"name": "MCP_OBJECT",
 			},
+			{
+				"class_name": "ProposalStore",
+				"name": "PROPOSAL_STORE",
+			},
 		],
 	},
+	// Drift-approval Slack integration (see docs/DRIFT_APPROVAL.md).
+	// Secrets (wrangler secret put): SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET
+	// Vars (or secrets): SLACK_CHANNEL_ID (C...), SLACK_APPROVER_IDS (U...,U...)
 	"kv_namespaces": [
 		{
 			"binding": "OAUTH_KV",

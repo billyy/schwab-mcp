@@ -62,6 +62,10 @@ jobs:
               {
                 "new_sqlite_classes": ["MyMCP"],
                 "tag": "v1"
+              },
+              {
+                "new_sqlite_classes": ["ProposalStore"],
+                "tag": "v2"
               }
             ],
             "durable_objects": {
@@ -69,6 +73,10 @@ jobs:
                 {
                   "class_name": "MyMCP",
                   "name": "MCP_OBJECT"
+                },
+                {
+                  "class_name": "ProposalStore",
+                  "name": "PROPOSAL_STORE"
                 }
               ]
             },

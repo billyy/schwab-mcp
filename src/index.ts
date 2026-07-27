@@ -14,6 +14,11 @@ import { type ValidatedEnv } from '../types/env'
 import { SchwabHandler, initializeSchwabAuthClient } from './auth'
 import { getConfig } from './config'
 import { handleOrdersRequest } from './orders/handler'
+import { handleProposalsRequest } from './proposals/handler'
+import { handleSlackInteraction } from './proposals/interactions'
+
+// Durable Object class must be exported from the worker entry module
+export { ProposalStore } from './proposals/store'
 import {
 	APP_NAME,
 	API_ENDPOINTS,
@@ -463,8 +468,21 @@ async function clearStaleGrant(
 
 		const age = Math.floor(Date.now() / 1000) - grant.createdAt
 		if (age > REFRESH_TOKEN_TTL_SECONDS) {
+			// Grant is old — but if the refresh automation has kept a fresh
+			// Schwab token in KV, keep the grant alive: clearing it would force
+			// the MCP client through a full browser re-auth (Schwab MFA) for
+			// nothing. Only clear when the Schwab side is genuinely stale, so
+			// re-auth is the actual recovery path.
+			const freshToken = await makeKvTokenStore(kv).loadFreshest()
+			if (freshToken) {
+				logger.info(
+					'OAuth grant is old but a fresh Schwab token exists — keeping grant',
+					{ grantKey, ageSeconds: age },
+				)
+				return
+			}
 			logger.warn(
-				'OAuth grant is stale (>7 days), clearing to trigger Schwab re-auth',
+				'OAuth grant is stale (>7 days) and no fresh Schwab token in KV, clearing to trigger Schwab re-auth',
 				{ grantKey, ageSeconds: age },
 			)
 			await kv.delete(grantKey)
@@ -487,6 +505,15 @@ export default {
 		// Programmatic order endpoint — API-key authed, bypasses the OAuth provider
 		if (url.pathname === API_ENDPOINTS.ORDERS) {
 			return handleOrdersRequest(request, env)
+		}
+
+		// Drift-approval endpoints — proposals are API-key authed; the Slack
+		// interactions callback is authenticated by Slack's request signature
+		if (url.pathname === API_ENDPOINTS.PROPOSALS) {
+			return handleProposalsRequest(request, env)
+		}
+		if (url.pathname === API_ENDPOINTS.SLACK_INTERACTIONS) {
+			return handleSlackInteraction(request, env, ctx)
 		}
 
 		if (
