@@ -380,6 +380,12 @@ export function resolveAccountHash(
 	return byPlain?.hashValue ?? byHash?.hashValue ?? null
 }
 
+/** Unique account display names with digits masked to the last 3, for error messages */
+export function availableAccountDisplays(ctx: OrderContext): string[] {
+	const displays = new Set(Object.values(ctx.displayMap).map(String))
+	return [...displays].map((d) => d.replace(/\d+(?=\d{3})/g, '…'))
+}
+
 export interface PreviewOutcome {
 	orderHash: string
 	schwabPreview: { status: number; body: unknown } | { error: string }
