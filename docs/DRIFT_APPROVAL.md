@@ -103,6 +103,20 @@ Execution details:
   (`audit:proposal:<ISO>:<id8>` and the usual `audit:order:…` per placement,
   90-day retention). A failed Slack update never re-triggers placement.
 
+## Helper endpoints for the drift scheduled task
+
+Both Bearer `ORDER_API_KEY`, built for the local Claude Code scheduled task
+that replaced the sandboxed Cowork job:
+
+- `GET /rebalance/snapshot?accounts=<num>,<num>` — read-only: scrubbed
+  display name, liquidation value, cash, slimmed positions
+  (symbol/assetType/long/short/marketValue) per account, plus live bid/ask
+  for the union of equity symbols. One call supplies everything drift
+  analysis and limit pricing need.
+- `POST /slack/notify` `{"text": "<mrkdwn>"}` — posts to the configured
+  `SLACK_CHANNEL_ID` via the worker's bot token, so the caller never holds
+  Slack credentials.
+
 ## Slack app setup (one time)
 
 1. [api.slack.com/apps](https://api.slack.com/apps) → Create New App → From a manifest:

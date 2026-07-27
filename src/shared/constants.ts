@@ -46,6 +46,8 @@ export const API_ENDPOINTS = {
 	ORDERS: '/orders',
 	PROPOSALS: '/proposals',
 	SLACK_INTERACTIONS: '/slack/interactions',
+	REBALANCE_SNAPSHOT: '/rebalance/snapshot',
+	SLACK_NOTIFY: '/slack/notify',
 } as const
 
 /**

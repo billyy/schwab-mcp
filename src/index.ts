@@ -16,6 +16,7 @@ import { getConfig } from './config'
 import { handleOrdersRequest } from './orders/handler'
 import { handleProposalsRequest } from './proposals/handler'
 import { handleSlackInteraction } from './proposals/interactions'
+import { handleRebalanceSnapshot, handleSlackNotify } from './rebalance/handler'
 
 // Durable Object class must be exported from the worker entry module
 export { ProposalStore } from './proposals/store'
@@ -514,6 +515,12 @@ export default {
 		}
 		if (url.pathname === API_ENDPOINTS.SLACK_INTERACTIONS) {
 			return handleSlackInteraction(request, env, ctx)
+		}
+		if (url.pathname === API_ENDPOINTS.REBALANCE_SNAPSHOT) {
+			return handleRebalanceSnapshot(request, env)
+		}
+		if (url.pathname === API_ENDPOINTS.SLACK_NOTIFY) {
+			return handleSlackNotify(request, env)
 		}
 
 		if (
