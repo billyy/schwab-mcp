@@ -10,7 +10,9 @@
     <string>/opt/homebrew/bin/ngrok</string>
     <string>http</string>
     <string>--domain=obsolescent-corporately-easter.ngrok-free.dev</string>
-    <string>8788</string>
+    <!-- 8790 = local Caddy path-router (/opt/homebrew/etc/Caddyfile):
+         /dashboard* -> TradingBot Streamlit :8501, everything else -> workerd :8788 -->
+    <string>8790</string>
     <string>--log</string>
     <string>stdout</string>
   </array>
