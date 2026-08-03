@@ -155,7 +155,11 @@ export async function handleRebalanceSnapshot(
 /**
  * POST /slack/notify — post a message to the configured Slack channel via
  * the worker's bot token, so callers (the drift scheduled task) never hold
- * Slack credentials. Bearer ORDER_API_KEY. Body: { "text": "<mrkdwn>" }.
+ * Slack credentials. Bearer ORDER_API_KEY.
+ * Body: { "text": "<mrkdwn>", "blocks"?: BlockKit[] }. `text` is always
+ * required — it is the notification preview and the fallback if `blocks`
+ * is rejected by Slack. `blocks` (≤50, each an object with a string `type`)
+ * enables rich rendering (header blocks, field tiles, dividers).
  */
 export async function handleSlackNotify(
 	request: Request,
@@ -180,21 +184,55 @@ export async function handleSlackNotify(
 	}
 
 	let text: unknown
+	let blocks: unknown
 	try {
-		text = ((await request.json()) as { text?: unknown }).text
+		const body = (await request.json()) as { text?: unknown; blocks?: unknown }
+		text = body.text
+		blocks = body.blocks
 	} catch {
 		return jsonResponse(400, { error: 'Invalid JSON body' })
 	}
 	if (typeof text !== 'string' || text.length === 0 || text.length > 12000) {
 		return jsonResponse(400, {
-			error: 'Body must be { "text": "<1-12000 chars>" }',
+			error: 'Body must be { "text": "<1-12000 chars>", "blocks"?: [...] }',
 		})
+	}
+	if (blocks !== undefined) {
+		const valid =
+			Array.isArray(blocks) &&
+			blocks.length > 0 &&
+			blocks.length <= 50 &&
+			blocks.every(
+				(b) =>
+					typeof b === 'object' &&
+					b !== null &&
+					typeof (b as { type?: unknown }).type === 'string',
+			) &&
+			JSON.stringify(blocks).length <= 40000
+		if (!valid) {
+			return jsonResponse(400, {
+				error:
+					'"blocks" must be 1-50 Block Kit objects (each with a string "type"), ≤40000 chars serialized',
+			})
+		}
 	}
 
 	const posted = await slackApi(config.SLACK_BOT_TOKEN, 'chat.postMessage', {
 		channel: config.SLACK_CHANNEL_ID,
 		text,
+		...(blocks !== undefined ? { blocks } : {}),
 	})
+	if (!posted.ok && blocks !== undefined && posted.error === 'invalid_blocks') {
+		// Degrade to the mandatory text fallback rather than dropping the report.
+		const retry = await slackApi(config.SLACK_BOT_TOKEN, 'chat.postMessage', {
+			channel: config.SLACK_CHANNEL_ID,
+			text,
+		})
+		if (retry.ok) {
+			return jsonResponse(200, { ok: true, ts: retry.ts, degraded: 'invalid_blocks' })
+		}
+		return jsonResponse(502, { error: `Slack post failed (${retry.error})` })
+	}
 	if (!posted.ok) {
 		return jsonResponse(502, { error: `Slack post failed (${posted.error})` })
 	}
