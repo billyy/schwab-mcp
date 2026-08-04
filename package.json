@@ -9,6 +9,7 @@
   "scripts": {
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
+    "dev:secondary": "wrangler dev --env secondary --port 8789 --persist-to .wrangler/state-secondary",
     "start": "wrangler dev",
     "inspect": "npx @modelcontextprotocol/inspector@0.11.0",
     "format": "prettier . --write",

@@ -173,6 +173,11 @@ wrangler.local.jsonc
 wrangler.deploy.jsonc
 .dev.vars
 .dev.vars.backup
+# Per-environment local secrets (e.g. .dev.vars.secondary for a second Schwab
+# login). Keep the committed *.example templates.
+.dev.vars.*
+!.dev.vars.example
+!.dev.vars.*.example
 .wrangler/
 
 # Claude Code local settings
