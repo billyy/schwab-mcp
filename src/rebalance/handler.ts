@@ -62,10 +62,58 @@ async function fetchAccountSlim(ctx: OrderContext, requested: string) {
 }
 
 /**
+ * Which US equity session the snapshot's prices came from. The drift task runs
+ * pre-market (7am ET report) as well as post-open (10am ET proposal), and
+ * bid/ask outside the regular session is the thin extended-hours book — not
+ * something a limit price should be derived from. Clock-based, with a
+ * securityStatus override so market holidays land on CLOSED too.
+ */
+type MarketSession = 'PRE' | 'REGULAR' | 'POST' | 'CLOSED'
+
+function classifySession(quoteStatuses: (string | null)[]): MarketSession {
+	const parts = new Intl.DateTimeFormat('en-US', {
+		timeZone: 'America/New_York',
+		weekday: 'short',
+		hour: '2-digit',
+		minute: '2-digit',
+		hour12: false,
+	}).formatToParts(new Date())
+	const get = (t: string) => parts.find((p) => p.type === t)?.value ?? ''
+	const weekday = get('weekday')
+	// 'en-US' hour12:false renders midnight as '24' in some ICU builds
+	const hour = Number(get('hour')) % 24
+	const minutes = hour * 60 + Number(get('minute'))
+
+	let session: MarketSession
+	if (weekday === 'Sat' || weekday === 'Sun') session = 'CLOSED'
+	else if (minutes < 4 * 60) session = 'CLOSED'
+	else if (minutes < 9 * 60 + 30) session = 'PRE'
+	else if (minutes < 16 * 60) session = 'REGULAR'
+	else if (minutes <= 20 * 60) session = 'POST'
+	else session = 'CLOSED'
+
+	// Holidays: the clock says REGULAR but Schwab reports every name as closed.
+	const known = quoteStatuses.filter((s): s is string => typeof s === 'string')
+	if (
+		session !== 'CLOSED' &&
+		known.length > 0 &&
+		known.every((s) => s.toLowerCase() === 'closed')
+	) {
+		return 'CLOSED'
+	}
+	return session
+}
+
+/**
  * GET /rebalance/snapshot?accounts=<a>,<b> — read-only input for the drift
  * scheduled task: slimmed positions + balances for each requested account,
  * plus live bid/ask for the union of equity symbols (so limit prices can be
  * set without a second call). Bearer ORDER_API_KEY, identifiers scrubbed.
+ *
+ * Also returns `marketSession` and `pricesTradable`. Callers MUST NOT build
+ * limit prices from bid/ask unless `pricesTradable` is true — outside the
+ * regular session those are extended-hours quotes. Each quote carries `close`
+ * (prior regular-session close) for sizing notionals pre-market.
  */
 export async function handleRebalanceSnapshot(
 	request: Request,
@@ -125,16 +173,23 @@ export async function handleRebalanceSnapshot(
 		),
 	]
 	let quotes: Record<string, unknown> = {}
+	const statuses: (string | null)[] = []
 	if (equitySymbols.length > 0) {
 		try {
 			const raw = (await ctx.client.marketData.quotes.getQuotes({
-				queryParams: { symbols: equitySymbols, fields: ['quote'] },
+				queryParams: { symbols: equitySymbols, fields: ['quote', 'regular'] },
 			})) as Record<string, any>
 			for (const [symbol, q] of Object.entries(raw)) {
+				statuses.push(q?.quote?.securityStatus ?? null)
 				quotes[symbol] = {
 					bid: q?.quote?.bidPrice ?? null,
 					ask: q?.quote?.askPrice ?? null,
 					last: q?.quote?.lastPrice ?? null,
+					// Prior regular-session close: the stable price to size
+					// notionals against when the regular market is not open.
+					close: q?.quote?.closePrice ?? null,
+					regularLast: q?.regularMarket?.lastPrice ?? null,
+					status: q?.quote?.securityStatus ?? null,
 				}
 			}
 		} catch (error) {
@@ -145,8 +200,11 @@ export async function handleRebalanceSnapshot(
 		}
 	}
 
+	const marketSession = classifySession(statuses)
 	return jsonResponse(200, {
 		asOf: new Date().toISOString(),
+		marketSession,
+		pricesTradable: marketSession === 'REGULAR',
 		accounts: scrubAccountIdentifiers(accounts, ctx.displayMap) as any,
 		quotes,
 	})

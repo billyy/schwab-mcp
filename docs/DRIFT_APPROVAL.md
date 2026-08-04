@@ -110,9 +110,23 @@ that replaced the sandboxed Cowork job:
 
 - `GET /rebalance/snapshot?accounts=<num>,<num>` — read-only: scrubbed
   display name, liquidation value, cash, slimmed positions
-  (symbol/assetType/long/short/marketValue) per account, plus live bid/ask
+  (symbol/assetType/long/short/marketValue) per account, plus live quotes
   for the union of equity symbols. One call supplies everything drift
   analysis and limit pricing need.
+
+  Each quote is `{bid, ask, last, close, regularLast, status}`, and the
+  response carries a top-level `marketSession`
+  (`PRE`/`REGULAR`/`POST`/`CLOSED`) and `pricesTradable`. **Callers must not
+  derive limit prices from `bid`/`ask` unless `pricesTradable` is true** —
+  outside the regular session those are the thin extended-hours book. Use
+  `close` (prior regular-session close) to size notionals pre-market.
+  The session is clock-based in `America/New_York`, with a `securityStatus`
+  override so market holidays resolve to `CLOSED`.
+
+  This is why the drift pipeline is two scheduled tasks: `crt-partnership-drift`
+  posts the report at 7:00am ET (pre-market, report-only), and
+  `crt-partnership-rebalance-propose` re-runs the diff and submits the
+  proposal at 10:00am ET against live quotes.
 - `POST /slack/notify` `{"text": "<mrkdwn>"}` — posts to the configured
   `SLACK_CHANNEL_ID` via the worker's bot token, so the caller never holds
   Slack credentials.
