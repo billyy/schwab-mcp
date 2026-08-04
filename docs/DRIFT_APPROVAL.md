@@ -118,7 +118,11 @@ that replaced the sandboxed Cowork job:
   response carries a top-level `marketSession`
   (`PRE`/`REGULAR`/`POST`/`CLOSED`) and `pricesTradable`. **Callers must not
   derive limit prices from `bid`/`ask` unless `pricesTradable` is true** —
-  outside the regular session those are the thin extended-hours book. Use
+  outside the regular session those are the thin extended-hours book.
+  `pricesTradable` is also false when the quote fetch itself failed
+  (`quotes: {"error": ...}`), and it is market-wide, not per-symbol: a halted
+  name still surfaces its frozen quote, so order-building callers should skip
+  any symbol whose `status` is not `Normal`. Use
   `close` (prior regular-session close) to size notionals pre-market.
   The session is clock-based in `America/New_York`, with a `securityStatus`
   override so market holidays resolve to `CLOSED`.

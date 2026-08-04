@@ -204,7 +204,9 @@ export async function handleRebalanceSnapshot(
 	return jsonResponse(200, {
 		asOf: new Date().toISOString(),
 		marketSession,
-		pricesTradable: marketSession === 'REGULAR',
+		// Also false when the quote fetch failed: a REGULAR-session clock with
+		// no quotes must not pass the caller's "safe to price limits" guard.
+		pricesTradable: marketSession === 'REGULAR' && !('error' in quotes),
 		accounts: scrubAccountIdentifiers(accounts, ctx.displayMap) as any,
 		quotes,
 	})
