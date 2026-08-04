@@ -1,0 +1,34 @@
+# Local secrets for the SECONDARY instance — a second Schwab login
+# (e.g. a spouse's own credentials), run with:
+#
+#   npm run dev:secondary
+#
+# Loaded by wrangler instead of .dev.vars because of `--env secondary`.
+# Copy to .dev.vars.secondary (git-ignored) and fill in.
+#
+# See docs/SECOND_LOGIN.md for the full runbook.
+
+# Same Schwab developer app as the primary instance — one app can authorize
+# multiple Schwab logins. Add http://localhost:8789/callback to the app's
+# redirect URIs first, or the callback will be rejected.
+SCHWAB_CLIENT_ID=your_schwab_app_key
+SCHWAB_CLIENT_SECRET=your_schwab_app_secret
+SCHWAB_REDIRECT_URI=http://localhost:8789/callback
+
+# MUST be different from the primary instance's key — generate a fresh one:
+#   openssl rand -hex 32
+COOKIE_ENCRYPTION_KEY=generate_with_openssl_rand_hex_32
+
+# READ-ONLY ENFORCEMENT — do not remove.
+# placeOrder and cancelOrder are CORE tools, meaning they are enabled by
+# default. Omitting this line gives this instance the ability to trade.
+ENABLED_TOOLS=-placeOrder,-cancelOrder
+
+LOG_LEVEL=info
+
+# Deliberately ABSENT so the LLM-free trading surface stays disabled — each of
+# these endpoints returns 503 unless both ORDER_API_KEY and SCHWAB_USER_ID are
+# set: /orders, /proposals, /rebalance/snapshot, /slack/notify.
+#   ORDER_API_KEY
+#   SCHWAB_USER_ID
+#   SLACK_BOT_TOKEN / SLACK_SIGNING_SECRET / SLACK_CHANNEL_ID / SLACK_APPROVER_IDS

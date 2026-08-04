@@ -54,4 +54,36 @@
 		"local_protocol": "http",
 		"upstream_protocol": "https",
 	},
+	// OPTIONAL — a second Schwab LOGIN (a spouse's own credentials, not another
+	// account on your login) must run as its own instance. Tokens are keyed by
+	// schwabUserId, which rotates on every re-auth, so both the MCP session
+	// loader and the orders path fall back to loadFreshest() — the newest
+	// token:* key REGARDLESS OF OWNER. Two logins in one KV can therefore adopt
+	// each other's tokens. Separate KV + persist dir is the isolation boundary.
+	// See docs/SECOND_LOGIN.md. Run with `npm run dev:secondary`.
+	"env": {
+		"secondary": {
+			"name": "schwab-mcp-secondary",
+			// kv_namespaces and durable_objects are NOT inherited by
+			// environments — they must be redeclared here.
+			"kv_namespaces": [
+				{
+					"binding": "OAUTH_KV",
+					"id": "YOUR_SECOND_KV_NAMESPACE_ID_HERE", // must differ from the one above
+				},
+			],
+			"durable_objects": {
+				"bindings": [
+					{
+						"class_name": "MyMCP",
+						"name": "MCP_OBJECT",
+					},
+					{
+						"class_name": "ProposalStore",
+						"name": "PROPOSAL_STORE",
+					},
+				],
+			},
+		},
+	},
 }

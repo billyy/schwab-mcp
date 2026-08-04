@@ -240,6 +240,22 @@ allowlist and executes approved batches via `src/proposals/executor.ts` —
 the identical LLM-free path `/orders` uses (shared in `src/orders/core.ts`).
 Disabled unless the `SLACK_*` secrets are set. Docs: `docs/DRIFT_APPROVAL.md`
 
+## Second Schwab Login
+
+A second brokerage account **on the same Schwab login** needs no setup — pass
+its account number. A second Schwab **login** (someone else's credentials) must
+run as its own instance: `npm run dev:secondary` (port 8789, separate KV
+namespace, `.wrangler/state-secondary/`, secrets in `.dev.vars.secondary`).
+
+This is a correctness boundary, not a preference. `loadFreshest()` returns the
+newest `token:*` key regardless of which login owns it, and both the MCP
+session loader (`src/index.ts`) and `buildClient()` (`src/orders/core.ts`) fall
+back to it — so two logins sharing one KV can adopt each other's tokens. The
+`secondary` env is read-only by default via
+`ENABLED_TOOLS=-placeOrder,-cancelOrder` (note: `placeOrder`/`cancelOrder` are
+core, i.e. on by default) plus unset `ORDER_API_KEY`/`SCHWAB_USER_ID`.
+Docs: `docs/SECOND_LOGIN.md`
+
 ## GitHub Actions
 
 The `.github/workflows/deploy.yml` workflow:
