@@ -58,15 +58,22 @@ function readProposal(arg) {
 }
 
 async function main() {
+	const flags = process.argv.slice(2).filter((a) => a.startsWith('--'))
 	const fileArg = process.argv.slice(2).find((a) => !a.startsWith('--'))
 	if (!fileArg) {
-		fail('Usage: schwab-propose.mjs <proposal.json | ->')
+		fail('Usage: schwab-propose.mjs [--dry-run] <proposal.json | ->')
 	}
+	const dryRun = flags.includes('--dry-run')
 
 	const proposal = readProposal(fileArg)
+	if (dryRun) proposal.dryRun = true
 	const apiKey = getApiKey()
 
-	console.log(`→ Posting proposal via ${PROPOSALS_URL} ...\n`)
+	console.log(
+		dryRun
+			? `→ DRY RUN via ${PROPOSALS_URL} — previews only, nothing stored or posted to Slack ...\n`
+			: `→ Posting proposal via ${PROPOSALS_URL} ...\n`,
+	)
 	let res
 	try {
 		res = await fetch(PROPOSALS_URL, {
@@ -86,6 +93,25 @@ async function main() {
 		fail(`Proposal rejected (HTTP ${res.status})`)
 	}
 
+	if (json.dryRun) {
+		console.log(
+			`✔ Dry run OK — ${json.orders.length} order(s) previewed by Schwab. Nothing stored, nothing posted to Slack.`,
+		)
+		console.log(
+			`  Market session: ${json.marketSession} (${json.sessionSource})${
+				json.sessionGuardWouldBlock
+					? ' — a real submit would be blocked by the session guard.'
+					: ''
+			}`,
+		)
+		for (const o of json.orders) {
+			const notional = o.notional === null ? '' : ` ~$${o.notional}`
+			console.log(
+				`  • ${o.symbols.join(', ')}${notional} (preview ${o.previewStatus}, hash ${o.orderHash.slice(0, 8)})`,
+			)
+		}
+		return
+	}
 	console.log(`✔ Proposal ${json.proposalId} created (expires ${json.expiresAt}).`)
 	if (json.superseded?.length) {
 		console.log(`  Superseded prior pending proposal(s): ${json.superseded.join(', ')}`)
