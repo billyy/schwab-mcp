@@ -11,6 +11,7 @@ import {
 } from '../orders/core'
 import { LOGGER_CONTEXTS } from '../shared/constants'
 import { logger } from '../shared/log'
+import { resolveMarketSession } from '../shared/marketSession'
 import { slackApi } from '../shared/slack'
 
 const rebalanceLogger = logger.child(LOGGER_CONTEXTS.PROPOSALS)
@@ -59,78 +60,6 @@ async function fetchAccountSlim(ctx: OrderContext, requested: string) {
 			null,
 		positions: slimPositions(account),
 	}
-}
-
-/**
- * Which US equity session the snapshot's prices came from. The drift task runs
- * pre-market (7am ET report) as well as post-open (10am ET proposal), and
- * bid/ask outside the regular session is the thin extended-hours book — not
- * something a limit price should be derived from.
- *
- * Primary source is Schwab's market-hours calendar (classifyFromCalendar),
- * which knows holidays AND early closes — a 1pm-ET close would fool any
- * clock. classifyFromClock is the fallback when that call fails.
- */
-type MarketSession = 'PRE' | 'REGULAR' | 'POST' | 'CLOSED'
-
-/**
- * Classify from the equity market-hours calendar. Returns null when the
- * payload can't answer the question (missing/malformed), so the caller can
- * fall back to the clock.
- */
-function classifyFromCalendar(hours: unknown): MarketSession | null {
-	const eq = Object.values((hours as any)?.equity ?? {})[0] as any
-	if (!eq || typeof eq.isOpen !== 'boolean') return null
-	if (!eq.isOpen) return 'CLOSED'
-	const sessions = eq.sessionHours ?? {}
-	if (Object.keys(sessions).length === 0) return null // open but no windows: broken data
-	const now = Date.now()
-	// start/end carry explicit offsets ("2026-08-04T09:30:00-04:00")
-	const within = (windows: unknown) =>
-		Array.isArray(windows) &&
-		windows.some((w: any) => {
-			const s = Date.parse(w?.start)
-			const e = Date.parse(w?.end)
-			return Number.isFinite(s) && Number.isFinite(e) && now >= s && now < e
-		})
-	if (within(sessions.regularMarket)) return 'REGULAR'
-	if (within(sessions.preMarket)) return 'PRE'
-	if (within(sessions.postMarket)) return 'POST'
-	return 'CLOSED'
-}
-
-function classifyFromClock(quoteStatuses: (string | null)[]): MarketSession {
-	const parts = new Intl.DateTimeFormat('en-US', {
-		timeZone: 'America/New_York',
-		weekday: 'short',
-		hour: '2-digit',
-		minute: '2-digit',
-		hour12: false,
-	}).formatToParts(new Date())
-	const get = (t: string) => parts.find((p) => p.type === t)?.value ?? ''
-	const weekday = get('weekday')
-	// 'en-US' hour12:false renders midnight as '24' in some ICU builds
-	const hour = Number(get('hour')) % 24
-	const minutes = hour * 60 + Number(get('minute'))
-
-	let session: MarketSession
-	if (weekday === 'Sat' || weekday === 'Sun') session = 'CLOSED'
-	else if (minutes < 4 * 60) session = 'CLOSED'
-	else if (minutes < 9 * 60 + 30) session = 'PRE'
-	else if (minutes < 16 * 60) session = 'REGULAR'
-	else if (minutes <= 20 * 60) session = 'POST'
-	else session = 'CLOSED'
-
-	// Holidays: the clock says REGULAR but Schwab reports every name as closed.
-	const known = quoteStatuses.filter((s): s is string => typeof s === 'string')
-	if (
-		session !== 'CLOSED' &&
-		known.length > 0 &&
-		known.every((s) => s.toLowerCase() === 'closed')
-	) {
-		return 'CLOSED'
-	}
-	return session
 }
 
 /**
@@ -231,22 +160,12 @@ export async function handleRebalanceSnapshot(
 
 	// Session classification: Schwab's calendar first (holidays + early
 	// closes), clock + securityStatus as fallback when that call fails.
-	let calendarSession: MarketSession | null = null
-	try {
-		const hours = await ctx.client.marketData.marketHours.getMarketHours({
-			queryParams: { markets: ['equity'] },
-		})
-		calendarSession = classifyFromCalendar(hours)
-	} catch (error) {
-		rebalanceLogger.warn('Market hours fetch failed; using clock fallback', {
-			error: error instanceof Error ? error.message : String(error),
-		})
-	}
-	const marketSession = calendarSession ?? classifyFromClock(statuses)
+	const { session: marketSession, source: sessionSource } =
+		await resolveMarketSession(ctx.client, statuses)
 	return jsonResponse(200, {
 		asOf: new Date().toISOString(),
 		marketSession,
-		sessionSource: calendarSession !== null ? 'calendar' : 'clock',
+		sessionSource,
 		// Also false when the quote fetch failed: a REGULAR-session verdict
 		// with no quotes must not pass the caller's "safe to price limits"
 		// guard.

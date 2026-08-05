@@ -19,6 +19,7 @@ import {
 	PROPOSAL_MAX_ORDERS,
 } from '../shared/constants'
 import { logger } from '../shared/log'
+import { resolveMarketSession } from '../shared/marketSession'
 import { buildProposalBlocks, slackApi } from '../shared/slack'
 import { proposalStore } from './store'
 import { type ProposalOrder, type ProposalRecord } from './types'
@@ -159,6 +160,27 @@ export async function handleProposalsRequest(
 		return jsonResponse(built.status, { error: built.error })
 	}
 	const { ctx } = built
+
+	// --- Session guard: LIMIT prices are only meaningful against a live
+	// regular-session book. Outside it the bid/ask is the thin extended-hours
+	// quote (or a stale closed one), so a limit derived from it can be far off
+	// the market — and this endpoint posts to Slack for a human to approve,
+	// where the price is no longer obviously stale. Enforced here rather than
+	// left to the caller: /rebalance/snapshot only *reports* pricesTradable,
+	// and a caller that ignores it must not be able to create a proposal.
+	const { session, source } = await resolveMarketSession(ctx.client)
+	if (session !== 'REGULAR') {
+		proposalsLogger.warn('Proposal rejected outside regular session', {
+			session,
+			source,
+			orderCount: orders.length,
+		})
+		return jsonResponse(409, {
+			error: `Market session is ${session}, not REGULAR — limit prices cannot be derived from the current book. Nothing was stored or posted to Slack.`,
+			marketSession: session,
+			sessionSource: source,
+		})
+	}
 
 	const proposalOrders: ProposalOrder[] = []
 	for (const [index, { orderBody, accountNumber }] of validated.entries()) {
