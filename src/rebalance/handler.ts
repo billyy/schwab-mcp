@@ -65,12 +65,41 @@ async function fetchAccountSlim(ctx: OrderContext, requested: string) {
  * Which US equity session the snapshot's prices came from. The drift task runs
  * pre-market (7am ET report) as well as post-open (10am ET proposal), and
  * bid/ask outside the regular session is the thin extended-hours book — not
- * something a limit price should be derived from. Clock-based, with a
- * securityStatus override so market holidays land on CLOSED too.
+ * something a limit price should be derived from.
+ *
+ * Primary source is Schwab's market-hours calendar (classifyFromCalendar),
+ * which knows holidays AND early closes — a 1pm-ET close would fool any
+ * clock. classifyFromClock is the fallback when that call fails.
  */
 type MarketSession = 'PRE' | 'REGULAR' | 'POST' | 'CLOSED'
 
-function classifySession(quoteStatuses: (string | null)[]): MarketSession {
+/**
+ * Classify from the equity market-hours calendar. Returns null when the
+ * payload can't answer the question (missing/malformed), so the caller can
+ * fall back to the clock.
+ */
+function classifyFromCalendar(hours: unknown): MarketSession | null {
+	const eq = Object.values((hours as any)?.equity ?? {})[0] as any
+	if (!eq || typeof eq.isOpen !== 'boolean') return null
+	if (!eq.isOpen) return 'CLOSED'
+	const sessions = eq.sessionHours ?? {}
+	if (Object.keys(sessions).length === 0) return null // open but no windows: broken data
+	const now = Date.now()
+	// start/end carry explicit offsets ("2026-08-04T09:30:00-04:00")
+	const within = (windows: unknown) =>
+		Array.isArray(windows) &&
+		windows.some((w: any) => {
+			const s = Date.parse(w?.start)
+			const e = Date.parse(w?.end)
+			return Number.isFinite(s) && Number.isFinite(e) && now >= s && now < e
+		})
+	if (within(sessions.regularMarket)) return 'REGULAR'
+	if (within(sessions.preMarket)) return 'PRE'
+	if (within(sessions.postMarket)) return 'POST'
+	return 'CLOSED'
+}
+
+function classifyFromClock(quoteStatuses: (string | null)[]): MarketSession {
 	const parts = new Intl.DateTimeFormat('en-US', {
 		timeZone: 'America/New_York',
 		weekday: 'short',
@@ -110,10 +139,11 @@ function classifySession(quoteStatuses: (string | null)[]): MarketSession {
  * plus live bid/ask for the union of equity symbols (so limit prices can be
  * set without a second call). Bearer ORDER_API_KEY, identifiers scrubbed.
  *
- * Also returns `marketSession` and `pricesTradable`. Callers MUST NOT build
- * limit prices from bid/ask unless `pricesTradable` is true — outside the
- * regular session those are extended-hours quotes. Each quote carries `close`
- * (prior regular-session close) for sizing notionals pre-market.
+ * Also returns `marketSession`, `sessionSource` ('calendar' | 'clock'), and
+ * `pricesTradable`. Callers MUST NOT build limit prices from bid/ask unless
+ * `pricesTradable` is true — outside the regular session those are
+ * extended-hours quotes. Each quote carries `close` (prior regular-session
+ * close) for sizing notionals pre-market.
  */
 export async function handleRebalanceSnapshot(
 	request: Request,
@@ -177,7 +207,7 @@ export async function handleRebalanceSnapshot(
 	if (equitySymbols.length > 0) {
 		try {
 			const raw = (await ctx.client.marketData.quotes.getQuotes({
-				queryParams: { symbols: equitySymbols, fields: ['quote', 'regular'] },
+				queryParams: { symbols: equitySymbols, fields: ['quote'] },
 			})) as Record<string, any>
 			for (const [symbol, q] of Object.entries(raw)) {
 				statuses.push(q?.quote?.securityStatus ?? null)
@@ -188,7 +218,6 @@ export async function handleRebalanceSnapshot(
 					// Prior regular-session close: the stable price to size
 					// notionals against when the regular market is not open.
 					close: q?.quote?.closePrice ?? null,
-					regularLast: q?.regularMarket?.lastPrice ?? null,
 					status: q?.quote?.securityStatus ?? null,
 				}
 			}
@@ -200,12 +229,27 @@ export async function handleRebalanceSnapshot(
 		}
 	}
 
-	const marketSession = classifySession(statuses)
+	// Session classification: Schwab's calendar first (holidays + early
+	// closes), clock + securityStatus as fallback when that call fails.
+	let calendarSession: MarketSession | null = null
+	try {
+		const hours = await ctx.client.marketData.marketHours.getMarketHours({
+			queryParams: { markets: ['equity'] },
+		})
+		calendarSession = classifyFromCalendar(hours)
+	} catch (error) {
+		rebalanceLogger.warn('Market hours fetch failed; using clock fallback', {
+			error: error instanceof Error ? error.message : String(error),
+		})
+	}
+	const marketSession = calendarSession ?? classifyFromClock(statuses)
 	return jsonResponse(200, {
 		asOf: new Date().toISOString(),
 		marketSession,
-		// Also false when the quote fetch failed: a REGULAR-session clock with
-		// no quotes must not pass the caller's "safe to price limits" guard.
+		sessionSource: calendarSession !== null ? 'calendar' : 'clock',
+		// Also false when the quote fetch failed: a REGULAR-session verdict
+		// with no quotes must not pass the caller's "safe to price limits"
+		// guard.
 		pricesTradable: marketSession === 'REGULAR' && !('error' in quotes),
 		accounts: scrubAccountIdentifiers(accounts, ctx.displayMap) as any,
 		quotes,

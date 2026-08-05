@@ -114,18 +114,22 @@ that replaced the sandboxed Cowork job:
   for the union of equity symbols. One call supplies everything drift
   analysis and limit pricing need.
 
-  Each quote is `{bid, ask, last, close, regularLast, status}`, and the
-  response carries a top-level `marketSession`
-  (`PRE`/`REGULAR`/`POST`/`CLOSED`) and `pricesTradable`. **Callers must not
-  derive limit prices from `bid`/`ask` unless `pricesTradable` is true** —
-  outside the regular session those are the thin extended-hours book.
-  `pricesTradable` is also false when the quote fetch itself failed
-  (`quotes: {"error": ...}`), and it is market-wide, not per-symbol: a halted
-  name still surfaces its frozen quote, so order-building callers should skip
-  any symbol whose `status` is not `Normal`. Use
-  `close` (prior regular-session close) to size notionals pre-market.
-  The session is clock-based in `America/New_York`, with a `securityStatus`
-  override so market holidays resolve to `CLOSED`.
+  Each quote is `{bid, ask, last, close, status}`, and the response carries a
+  top-level `marketSession` (`PRE`/`REGULAR`/`POST`/`CLOSED`), `sessionSource`
+  (`calendar`/`clock`), and `pricesTradable`. **Callers must not derive limit
+  prices from `bid`/`ask` unless `pricesTradable` is true** — outside the
+  regular session those are the thin extended-hours book. `pricesTradable` is
+  also false when the quote fetch itself failed (`quotes: {"error": ...}`),
+  and it is market-wide, not per-symbol: a halted name still surfaces its
+  frozen quote, so order-building callers should skip any symbol whose
+  `status` is not `Normal`. Use `close` (prior regular-session close) to size
+  notionals pre-market.
+  The session comes from Schwab's equity market-hours calendar
+  (`sessionSource: "calendar"`), which covers holidays and early closes. If
+  that call fails, a clock in `America/New_York` with a `securityStatus`
+  override takes over (`sessionSource: "clock"`) — correct on normal days and
+  full holidays, but blind to early closes (1–4pm ET on a 1pm-close day reads
+  as REGULAR), which is why the calendar is primary.
 
   This is why the drift pipeline is two scheduled tasks: `crt-partnership-drift`
   posts the report at 7:00am ET (pre-market, report-only), and
