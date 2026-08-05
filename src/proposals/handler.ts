@@ -31,6 +31,15 @@ const ProposalRequestSchema = z.object({
 	accountNumber: z.string().optional(),
 	orders: z.array(z.unknown()).min(1).max(PROPOSAL_MAX_ORDERS),
 	allowDuplicate: z.boolean().optional(),
+	/**
+	 * Rehearse the batch without creating anything: validation, guardrails and
+	 * the real Schwab preview all run, then the request returns before the
+	 * proposal is stored or posted to Slack. Because nothing approvable is
+	 * produced, a dry run is exempt from the regular-session guard — the point
+	 * of that guard is a human approving a stale limit, and there is no message
+	 * to approve.
+	 */
+	dryRun: z.boolean().optional(),
 })
 
 /** All secrets/bindings the drift-approval feature needs, or a reason it is disabled */
@@ -96,8 +105,13 @@ export async function handleProposalsRequest(
 			})),
 		})
 	}
-	const { summary, accountNumber: defaultAccount, orders, allowDuplicate } =
-		parsedBody.data
+	const {
+		summary,
+		accountNumber: defaultAccount,
+		orders,
+		allowDuplicate,
+		dryRun,
+	} = parsedBody.data
 
 	// --- Validate every order and run pure guardrails before any I/O ---
 	const validated: { orderBody: Record<string, unknown>; accountNumber: string }[] =
@@ -169,7 +183,7 @@ export async function handleProposalsRequest(
 	// left to the caller: /rebalance/snapshot only *reports* pricesTradable,
 	// and a caller that ignores it must not be able to create a proposal.
 	const { session, source } = await resolveMarketSession(ctx.client)
-	if (session !== 'REGULAR') {
+	if (session !== 'REGULAR' && !dryRun) {
 		proposalsLogger.warn('Proposal rejected outside regular session', {
 			session,
 			source,
@@ -223,6 +237,30 @@ export async function handleProposalsRequest(
 			symbols: guard.ok ? guard.symbols : [],
 			notional: guard.ok ? guard.notional : null,
 			previewStatus: preview.schwabPreview.status,
+		})
+	}
+
+	// --- Dry run: everything above actually ran (including the Schwab
+	// preview); stop here so nothing is stored and nothing reaches Slack. ---
+	if (dryRun) {
+		proposalsLogger.info('Proposal dry run completed; nothing stored or posted', {
+			orderCount: proposalOrders.length,
+			session,
+		})
+		return jsonResponse(200, {
+			dryRun: true,
+			stored: false,
+			slackPosted: false,
+			marketSession: session,
+			sessionSource: source,
+			sessionGuardWouldBlock: session !== 'REGULAR',
+			summary,
+			orders: proposalOrders.map((o) => ({
+				symbols: o.symbols,
+				notional: o.notional,
+				orderHash: o.orderHash,
+				previewStatus: o.previewStatus,
+			})),
 		})
 	}
 
