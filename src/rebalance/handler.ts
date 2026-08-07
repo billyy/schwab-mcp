@@ -48,10 +48,22 @@ async function fetchAccountSlim(ctx: OrderContext, requested: string) {
 	// account type (margin: initialBalances; cash: currentBalances)
 	const current = account?.securitiesAccount?.currentBalances ?? {}
 	const initial = account?.securitiesAccount?.initialBalances ?? {}
+	// initialBalances is Schwab's START-OF-DAY block: it does not move
+	// intraday. Falling back to it silently hands the caller a stale figure
+	// that looks live — positions revalue all session while liquidationValue
+	// stays pinned, which reads as a growing reconciliation gap. Report which
+	// block answered so callers can say so instead of guessing.
+	const liquidationValueSource =
+		current.liquidationValue != null
+			? 'current'
+			: initial.liquidationValue != null
+				? 'initial (start-of-day, does not update intraday)'
+				: 'unavailable'
 	return {
 		account: ctx.displayMap[hash] ?? 'unknown',
 		liquidationValue:
 			current.liquidationValue ?? initial.liquidationValue ?? null,
+		liquidationValueSource,
 		cashBalance:
 			current.cashBalance ??
 			current.totalCash ??
@@ -73,6 +85,13 @@ async function fetchAccountSlim(ctx: OrderContext, requested: string) {
  * `pricesTradable` is true — outside the regular session those are
  * extended-hours quotes. Each quote carries `close` (prior regular-session
  * close) for sizing notionals pre-market.
+ *
+ * Each account carries `liquidationValueSource`. When it starts with
+ * 'initial', that account's `liquidationValue` is Schwab's START-OF-DAY
+ * figure and does not move intraday: positions revalue against a frozen
+ * baseline, so positions + cash − liquidationValue widens through the session
+ * and is NOT a clean measure of unsettled funds. Two accounts whose sources
+ * differ cannot be compared on liquidationValue mid-session.
  */
 export async function handleRebalanceSnapshot(
 	request: Request,
@@ -252,7 +271,11 @@ export async function handleSlackNotify(
 			text,
 		})
 		if (retry.ok) {
-			return jsonResponse(200, { ok: true, ts: retry.ts, degraded: 'invalid_blocks' })
+			return jsonResponse(200, {
+				ok: true,
+				ts: retry.ts,
+				degraded: 'invalid_blocks',
+			})
 		}
 		return jsonResponse(502, { error: `Slack post failed (${retry.error})` })
 	}

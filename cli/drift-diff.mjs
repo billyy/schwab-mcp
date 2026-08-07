@@ -151,11 +151,18 @@ function reconcile(account) {
 	)
 	const difference =
 		positionsValue + account.cashBalance - account.liquidationValue
+	const source = account.liquidationValueSource ?? 'unknown'
 	return {
 		account: account.account,
 		positionsValue,
 		cashBalance: account.cashBalance,
 		liquidationValue: account.liquidationValue,
+		liquidationValueSource: source,
+		// Schwab serves some accounts' liquidationValue only from the
+		// start-of-day block. Positions then revalue all session against a
+		// frozen baseline, so `difference` is NOT purely unsettled funds — it
+		// also absorbs the day's P&L. Say which, rather than blaming settlement.
+		staleLiquidationValue: source.startsWith('initial'),
 		difference,
 		reconciles: Math.abs(difference) < RECONCILE_TOLERANCE,
 	}
@@ -313,17 +320,34 @@ function report(result) {
 			`  ${row.account}: liquidation ${money(row.liquidationValue)} · ` +
 				`cash ${money(row.cashBalance)} · positions ${money(row.positionsValue)}`,
 		)
+		if (row.reconciles) {
+			push('    reconciles exactly')
+			continue
+		}
 		push(
-			row.reconciles
-				? '    reconciles exactly'
-				: `    UNSETTLED FUNDS: positions + cash = ${money(
-						row.positionsValue + row.cashBalance,
-					)} (accurate value) vs reported liquidation ${money(row.liquidationValue)} ` +
-						`→ ${signedMoney(row.difference)} still settling; clears in ~5 business days. Not margin.`,
+			`    positions + cash = ${money(row.positionsValue + row.cashBalance)} ` +
+				`(accurate value) vs reported liquidation ${money(row.liquidationValue)} ` +
+				`→ ${signedMoney(row.difference)}`,
+		)
+		push(
+			row.staleLiquidationValue
+				? `    NOTE: this liquidationValue is START-OF-DAY and does not move intraday ` +
+						`(source: ${row.liquidationValueSource}). The difference therefore mixes ` +
+						`unsettled funds with today's P&L and widens through the session — it is ` +
+						`not a clean settlement figure. Compare day-over-day at the same time of day.`
+				: `    Unsettled funds: clears in ~5 business days. Not margin.`,
 		)
 	}
 	const gap = balances[0].liquidationValue - balances[1].liquidationValue
 	push(`  Gap (${PORTFOLIO.label} − ${BENCHMARK.label}): ${signedMoney(gap)}`)
+	if (balances[0].staleLiquidationValue !== balances[1].staleLiquidationValue) {
+		push(
+			`    WARNING: that gap is not like-for-like — ${
+				balances[0].staleLiquidationValue ? PORTFOLIO.label : BENCHMARK.label
+			}'s liquidationValue is start-of-day while the other is live. Intraday it ` +
+				`measures staleness as much as real divergence. Do not headline it mid-session.`,
+		)
+	}
 	push()
 
 	push(`QUANTITY GAPS (equity) — ${gaps.length || 'none'}`)
