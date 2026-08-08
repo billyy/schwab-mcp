@@ -1,3 +1,43 @@
+# Two OAuth legs — read this first
+
+Almost every "Claude Desktop can't connect" incident starts with confusing these:
+
+| Leg | Credential lives in | Kept alive by |
+| --- | --- | --- |
+| **Schwab → worker** | KV `token:<schwabUserId>` | `refresh.ts`, twice weekly (below) |
+| **Desktop (`mcp-remote`) → worker** | `~/.mcp-auth/mcp-remote-*/<md5>_tokens.json` | itself — see below |
+
+They fail independently. The twice-weekly job renews **only** the Schwab leg;
+it deliberately discards the MCP authorization code it receives
+(`refresh.ts`, "not exchanged").
+
+The MCP leg needs no automation in normal operation: the worker issues a
+rotating refresh token that never expires, and `mcp-remote` exchanges it
+automatically whenever it gets a 401. It only breaks if the *grant* is
+destroyed — revoked, KV wiped, or the tunnel URL changed (the URL is hashed
+into `mcp-remote`'s state filename, so a new URL orphans the old token).
+
+> Historical note: a `clearStaleGrant()` in `src/index.ts` used to delete the
+> MCP grant whenever the Schwab token happened to be stale. Because grant
+> deletion is irreversible, a *transient* Schwab gap (Mac off over a weekend, a
+> failed run) permanently broke Claude Desktop long after the Schwab side had
+> healed — and the only recovery was a hand-run `npx mcp-remote`. That function
+> is gone; do not reintroduce a dependency between the two legs.
+
+When the MCP leg does die, `watchdog.sh` notices within 5 minutes (the token
+file is missing), drops `~/.schwab-mcp-auth/.request-mcp-auth`, and kickstarts
+the refresh job, whose phase 2 runs `mcp-auth.ts` to re-authorize unattended.
+Restart Claude Desktop afterwards to pick up the new token.
+
+Manual equivalent, if you ever want to force it:
+
+```bash
+cd automation && FORCE_MCP_AUTH=1 npm run mcp-auth
+```
+
+`mcp-auth.ts` is idempotent — it probes the stored token first and exits in
+about a second when it still works.
+
 # Schwab MCP stack services (launchd)
 
 Four LaunchAgents keep the stack alive across reboots and crashes:
@@ -7,12 +47,28 @@ Four LaunchAgents keep the stack alive across reboots and crashes:
 | `com.schwab-mcp.dev` | `npm run dev` (wrangler dev :8788) | login + KeepAlive |
 | `com.schwab-mcp.ngrok` | ngrok tunnel → :8788 | login + KeepAlive |
 | `com.schwab-mcp.watchdog` | `watchdog.sh` health check | every 5 min |
-| `com.schwab-mcp.refresh` | OAuth token refresh (below) | Wed + Sun 03:00 |
+| `com.schwab-mcp.refresh` | Schwab token refresh (below), plus MCP re-auth when flagged | Wed + Sun 03:00, or kickstarted by the watchdog |
 
 The watchdog exists because KeepAlive only restarts processes that *exit* —
 wrangler dev can wedge with its root process alive but the port dead. It
-curls both `localhost:8788` and the tunnel, and kickstarts whichever layer
-is unhealthy. Logs: `~/Library/Logs/schwab-mcp-{dev,ngrok,watchdog}.log`.
+curls both `localhost:8788` and the tunnel, kickstarts whichever layer is
+unhealthy, and then checks the MCP leg's token file (only when the stack
+below it is healthy, so a dead tunnel is never misread as a dead grant).
+Logs: `~/Library/Logs/schwab-mcp-{dev,ngrok,watchdog}.log`.
+
+Re-auth costs a real Schwab login and an MFA text, so the watchdog will not
+retry it on its 5-minute cadence: attempts are spaced ≥6h
+(`MCP_AUTH_COOLDOWN_SECONDS`) and stop entirely after 3 consecutive failures
+(`MCP_AUTH_MAX_FAILURES`). Clear `~/.schwab-mcp-auth/.mcp-auth-fail-count` to
+resume after fixing the underlying problem.
+
+Shared config lives in `env.sh` (`WORKER_URL`, `MCP_URL`, state-file paths) —
+`WORKER_URL` must stay byte-identical everywhere, because `mcp-remote` keys its
+stored token by md5 of the exact URL string. `mcpRemotePaths.mjs` resolves that
+hashed path for both the TS and shell callers; never hardcode
+`mcp-remote-<version>`, since that directory name tracks an internal constant
+that lags the published version (0.1.38 writes to `mcp-remote-0.1.37`). The
+Desktop config pins `mcp-remote@0.1.38` for the same reason.
 
 Install any of them with:
 

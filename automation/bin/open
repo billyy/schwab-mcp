@@ -1,0 +1,11 @@
+#!/bin/sh
+# No-op stand-in for macOS `open`, placed on the PATH of the mcp-remote child
+# process ONLY (see mcp-auth.ts). mcp-remote unconditionally shells out to the
+# bare command `open` to launch a browser for the OAuth consent screen; we drive
+# that screen with Playwright instead, so a real browser window would just be
+# noise on the user's desktop during an unattended 3am run.
+#
+# Nothing else on the machine is affected — this is never added to the parent
+# PATH. If mcp-remote ever switches to an absolute path, the only consequence is
+# a stray browser tab, not a failed run.
+exit 0
