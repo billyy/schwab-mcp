@@ -240,6 +240,28 @@ allowlist and executes approved batches via `src/proposals/executor.ts` —
 the identical LLM-free path `/orders` uses (shared in `src/orders/core.ts`).
 Disabled unless the `SLACK_*` secrets are set. Docs: `docs/DRIFT_APPROVAL.md`
 
+## Two independent OAuth legs
+
+Do not couple these — a bug that did cost weeks of broken Desktop connections:
+
+1. **Schwab → worker**: token in KV (`token:<schwabUserId>`). Renewed by the
+   twice-weekly `automation/` job. Staleness is handled in `loadTokenForETM()`
+   and by `loadFreshest()`.
+2. **Desktop (`mcp-remote`) → worker**: the OAuth-provider grant
+   (`grant:<userId>:<grantId>`) plus mcp-remote's local token file. Self-heals
+   forever via a rotating refresh token — *provided the grant is never deleted*.
+
+A former `clearStaleGrant()` deleted the MCP grant whenever `loadFreshest()`
+returned null. Grant deletion is irreversible (mcp-remote gets `invalid_grant`,
+discards its tokens, and only an interactive browser re-auth recovers), so a
+transient Schwab gap permanently broke Claude Desktop. **Never make the MCP
+grant's lifetime depend on Schwab token health.** When the Schwab side is dead,
+tools return `SCHWAB_AUTH_ERROR_MESSAGE` naming the recovery command instead.
+
+Recovery for leg 2 is automated: `watchdog.sh` detects the missing token file,
+flags it, and the refresh job's phase 2 runs `automation/mcp-auth.ts`.
+Docs: `automation/README.md`
+
 ## Second Schwab Login
 
 A second brokerage account **on the same Schwab login** needs no setup — pass

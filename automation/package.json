@@ -6,6 +6,8 @@
   "scripts": {
     "refresh": "tsx refresh.ts",
     "refresh:headed": "HEADED=1 tsx refresh.ts",
+    "mcp-auth": "tsx mcp-auth.ts",
+    "mcp-auth:headed": "HEADED=1 tsx mcp-auth.ts",
     "install:browsers": "playwright install chromium"
   },
   "dependencies": {

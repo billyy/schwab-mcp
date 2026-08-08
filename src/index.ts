@@ -28,7 +28,6 @@ import {
 	ENVIRONMENTS,
 	CONTENT_TYPES,
 	APP_SERVER_NAME,
-	REFRESH_TOKEN_TTL_SECONDS,
 } from './shared/constants'
 import { makeKvTokenStore, type TokenIdentifiers } from './shared/kvTokenStore'
 import { logger, buildLogger, type PinoLogLevel } from './shared/log'
@@ -41,6 +40,17 @@ import {
 	parseEnabledTools,
 	filterToolSpecs,
 } from './tools'
+
+/**
+ * Returned when the Schwab authorization is dead but the MCP connection itself
+ * is fine. The two legs fail independently, and the recovery for this one is the
+ * refresh automation — so name it rather than surfacing an opaque 401.
+ */
+const SCHWAB_AUTH_ERROR_MESSAGE =
+	'Schwab authorization is expired or revoked. The MCP connection itself is healthy — ' +
+	'only the Schwab side needs re-authorizing. Recover by running: ' +
+	'cd ~/git/schwab-mcp/automation && npm run refresh ' +
+	'(add HEADED=1 if it reports that MFA needs a human).'
 
 /**
  * DO props now contain only IDs needed for token key derivation
@@ -58,6 +68,8 @@ export class MyMCP extends DurableMCP<MyMCPProps, Env> {
 	private client!: SchwabApiClient
 	private validatedConfig!: ValidatedEnv
 	private mcpLogger = logger.child(LOGGER_CONTEXTS.MCP_DO)
+	/** Set when the Schwab token could not be loaded/refreshed at init time. */
+	private authDegraded = false
 	private httpTransport?: HttpStreamTransport
 
 	server = new McpServer({
@@ -215,6 +227,14 @@ export class MyMCP extends DurableMCP<MyMCPProps, Env> {
 			this.mcpLogger.debug(
 				`[MyMCP.init] STEP 5B: Proactive ETM initialization complete. Success: ${etmInitSuccess}`,
 			)
+			// Remember a failed init so tools can say WHY they are failing instead
+			// of each one surfacing its own opaque SDK error.
+			this.authDegraded = !etmInitSuccess
+			if (this.authDegraded) {
+				this.mcpLogger.warn(
+					'ETM initialization failed — Schwab auth is degraded; tools will return the re-auth instructions',
+				)
+			}
 
 			// 2.5. Auto-migrate tokens if we have schwabUserId but token was loaded from clientId key
 			if (this.props.schwabUserId && this.props.clientId) {
@@ -257,6 +277,24 @@ export class MyMCP extends DurableMCP<MyMCPProps, Env> {
 					description: spec.description,
 					schema: spec.schema,
 					handler: async (params, c) => {
+						// Init found no usable Schwab token. Retry once before giving up:
+						// the refresh automation may have written a fresh token since
+						// (loadTokenForETM adopts the freshest on reload), and a long-lived
+						// Desktop session must be able to recover without a reconnect.
+						if (this.authDegraded) {
+							this.authDegraded = !(await this.tokenManager
+								.initialize()
+								.catch(() => false))
+							if (this.authDegraded) {
+								return toolError(SCHWAB_AUTH_ERROR_MESSAGE, {
+									source: spec.name,
+									schwabAuthRequired: true,
+								})
+							}
+							this.mcpLogger.info(
+								'Schwab auth recovered on retry — a fresh token appeared in KV',
+							)
+						}
 						try {
 							const data = await spec.call(c, params)
 							return toolSuccess({
@@ -265,15 +303,25 @@ export class MyMCP extends DurableMCP<MyMCPProps, Env> {
 								message: `Successfully executed ${spec.name}`,
 							})
 						} catch (error) {
-							// Clear stale tokens on 401 so next connection triggers re-auth
+							// Clear the stale token on 401 so the next load re-adopts the
+							// freshest KV token (or fails loudly if there isn't one).
 							const status =
 								(error as any)?.status ?? (error as any)?.httpStatus
 							if (status === 401) {
 								this.mcpLogger.warn(
-									'Received 401 from Schwab API, clearing token to trigger re-auth',
+									'Received 401 from Schwab API, clearing token so the next load re-adopts',
 									{ tool: spec.name },
 								)
+								// Deliberately NOT latching authDegraded here: clearToken has
+								// set up the next load to adopt the freshest KV token, and
+								// latching would block that self-healing on the next call.
 								await kvToken.clearToken(getTokenIds())
+								return toolError(SCHWAB_AUTH_ERROR_MESSAGE, {
+									source: spec.name,
+									schwabAuthRequired: true,
+									originalError:
+										error instanceof Error ? error.message : String(error),
+								})
 							}
 							return toolError(error, { source: spec.name })
 						}
@@ -445,55 +493,25 @@ const oauthProvider = new OAuthProvider({
 })
 
 /**
- * Clears stale OAuth grants from KV when Schwab refresh tokens have expired (>7 days).
- * This forces the MCP client to re-authenticate through the full Schwab OAuth flow.
+ * The MCP grant (Desktop <-> this worker) is deliberately NOT tied to the health
+ * of the Schwab token. They are independent OAuth legs:
+ *
+ *   - The Schwab leg is refreshed by automation/ (Wed+Sun) and self-heals via
+ *     loadFreshest(). Its staleness is handled in loadTokenForETM() above.
+ *   - The MCP leg self-heals on its own: the OAuth provider issues a rotating
+ *     refresh token, and mcp-remote exchanges it automatically on any 401.
+ *
+ * A previous clearStaleGrant() deleted the MCP grant whenever the Schwab token
+ * happened to be stale. Deleting a grant is irreversible: mcp-remote's refresh
+ * token starts returning invalid_grant, it discards its own tokens, and only an
+ * interactive browser re-auth can recover — so a TRANSIENT Schwab gap (Mac off,
+ * tunnel down, a failed refresh run) permanently broke the Desktop connection
+ * long after the Schwab side had healed. It also ran on /token, where it could
+ * delete the grant mid-way through the very refresh that would have healed the
+ * session. When the Schwab token is genuinely dead the recovery path is the
+ * refresh automation, not destroying the transport's credentials, so tool calls
+ * surface SCHWAB_AUTH_ERROR_MESSAGE instead.
  */
-async function clearStaleGrant(
-	kv: KVNamespace,
-	authHeader: string | null,
-): Promise<void> {
-	if (!authHeader?.startsWith('Bearer ')) return
-
-	const token = authHeader.substring(7)
-	const parts = token.split(':')
-	if (parts.length !== 3) return
-
-	const [userId, grantId] = parts
-	const grantKey = `grant:${userId}:${grantId}`
-
-	try {
-		const grant = await kv.get(grantKey, { type: 'json' }) as {
-			createdAt?: number
-		} | null
-		if (!grant?.createdAt) return
-
-		const age = Math.floor(Date.now() / 1000) - grant.createdAt
-		if (age > REFRESH_TOKEN_TTL_SECONDS) {
-			// Grant is old — but if the refresh automation has kept a fresh
-			// Schwab token in KV, keep the grant alive: clearing it would force
-			// the MCP client through a full browser re-auth (Schwab MFA) for
-			// nothing. Only clear when the Schwab side is genuinely stale, so
-			// re-auth is the actual recovery path.
-			const freshToken = await makeKvTokenStore(kv).loadFreshest()
-			if (freshToken) {
-				logger.info(
-					'OAuth grant is old but a fresh Schwab token exists — keeping grant',
-					{ grantKey, ageSeconds: age },
-				)
-				return
-			}
-			logger.warn(
-				'OAuth grant is stale (>7 days) and no fresh Schwab token in KV, clearing to trigger Schwab re-auth',
-				{ grantKey, ageSeconds: age },
-			)
-			await kv.delete(grantKey)
-		}
-	} catch (error) {
-		logger.warn('Failed to check/clear stale grant', {
-			error: error instanceof Error ? error.message : String(error),
-		})
-	}
-}
 
 export default {
 	async fetch(
@@ -523,16 +541,6 @@ export default {
 			return handleSlackNotify(request, env)
 		}
 
-		if (
-			url.pathname === API_ENDPOINTS.SSE ||
-			url.pathname === API_ENDPOINTS.MCP ||
-			url.pathname === API_ENDPOINTS.TOKEN
-		) {
-			await clearStaleGrant(
-				env.OAUTH_KV,
-				request.headers.get('Authorization'),
-			)
-		}
 		return (oauthProvider as any).fetch(request, env, ctx)
 	},
 } satisfies ExportedHandler<Env & { MCP_OBJECT: DurableObjectNamespace }>
