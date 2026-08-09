@@ -262,6 +262,19 @@ Recovery for leg 2 is automated: `watchdog.sh` detects the missing token file,
 flags it, and the refresh job's phase 2 runs `automation/mcp-auth.ts`.
 Docs: `automation/README.md`
 
+### A 401 on leg 2 is not a dead grant
+
+Leg 2's token file holds two very different things: an **access token with a
+one-hour TTL** and a **refresh token whose grant lives indefinitely**. Any
+health check that reads a `401` as "the grant is gone" is wrong 23 hours out of
+24, and being wrong here is expensive — it escalates to a full Schwab login and
+an MFA text to the owner's phone for a leg that was never broken. `mcp-auth.ts`
+therefore compares the token file's mtime against `expires_in` and calls that
+case `aged-out`, then hands off to `mcp-remote-client`, which exchanges the
+refresh token silently. Only a `401` on a token still inside its TTL, or a
+missing token file, points at the grant itself. The grant's real liveness
+signal is the `grant:<userId>:<grantId>` KV record, not any status code.
+
 ### Adopt on *newer*, never on *empty-or-aged-out*
 
 `refresh.ts` performs a full re-authorization, which mints a refresh token under
