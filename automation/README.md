@@ -38,6 +38,45 @@ cd automation && FORCE_MCP_AUTH=1 npm run mcp-auth
 `mcp-auth.ts` is idempotent — it probes the stored token first and exits in
 about a second when it still works.
 
+### Reading the probe line in the log
+
+Two things are easy to misread here, and both have cost a needless MFA text.
+
+**A `401` is usually not a problem.** mcp-remote's token file holds an *access*
+token with a **one-hour TTL** (`DEFAULT_ACCESS_TOKEN_TTL` in the OAuth provider)
+and a *refresh* token backed by a grant that lives indefinitely. So for 23 of
+every 24 hours, a healthy leg answers this probe with `401` — that is the
+steady state, not a failure. `mcp-auth.ts` compares the token file's mtime
+against `expires_in` and says `aged-out` for that case, reserving `rejected`
+for a `401` on a token that should still have been good. Neither verdict
+re-authorizes by itself: both hand off to `mcp-remote-client`, which exchanges
+the refresh token silently and only opens a browser if that genuinely fails.
+A log line reading `refreshed the token silently — no browser, no MFA text` is
+the normal, healthy outcome.
+
+**On the non-401 answers, the verdict is the body, not the status.** A live
+token reaches the MCP handler, which answers the probe's session-less `ping`
+with `HTTP 400` and a JSON-RPC `-32000 Missing Mcp-Session-Id header` — a
+protocol-layer refusal that proves auth passed. Anything else (ngrok's offline
+page, a 404 from a mistyped `MCP_URL`, a proxy 5xx) is not an auth verdict at
+all: the script fails with "Inconclusive probe" rather than re-authorizing,
+because an MFA text would not fix a tunnel that is down. Fix the stack
+underneath, then re-run.
+
+Two things make this safe to exercise:
+
+```bash
+cd automation && npm run probe-check          # asserts all the verdicts, live, no MFA
+cd automation && MCP_AUTH_NO_BROWSER=1 npm run mcp-auth
+```
+
+`probe-check.ts` drives the real verdict functions against the live worker and
+never touches the re-auth path. `MCP_AUTH_NO_BROWSER=1` makes `mcp-auth.ts`
+abort instead of driving the Schwab consent screen, so a run can prove whether
+re-authorization *would* be needed without spending the MFA text on finding
+out. Run `probe-check` in both token states (fresh, and again once the hour is
+up) to cover every branch.
+
 # Schwab MCP stack services (launchd)
 
 Four LaunchAgents keep the stack alive across reboots and crashes:
