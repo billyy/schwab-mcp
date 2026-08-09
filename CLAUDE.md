@@ -262,6 +262,22 @@ Recovery for leg 2 is automated: `watchdog.sh` detects the missing token file,
 flags it, and the refresh job's phase 2 runs `automation/mcp-auth.ts`.
 Docs: `automation/README.md`
 
+### Adopt on *newer*, never on *empty-or-aged-out*
+
+`refresh.ts` performs a full re-authorization, which mints a refresh token under
+a brand-new `token:<schwabUserId>` key **and revokes the previous one**. A
+session's own copy is therefore routinely recent *and* dead, so token age can
+never detect it. Both `loadTokenForETM()` (`src/index.ts`) and `buildClient()`
+(`src/orders/core.ts`) must compare `token_ts:` mint times and adopt whenever KV
+holds a **strictly newer** token — falling back only when the key is missing or
+>7 days old leaves the session pinned to a revoked token until the 7-day timer
+expires, which broke Desktop and the drift pipeline for a full day (2026-08-08).
+
+For the same reason, an adopted copy **inherits the source's mint time** rather
+than being stamped `now`: re-stamping resets the 7-day refresh-token clock, hides
+a genuinely expiring token, and was what made the pin last a week instead of a
+day.
+
 ## Second Schwab Login
 
 A second brokerage account **on the same Schwab login** needs no setup — pass

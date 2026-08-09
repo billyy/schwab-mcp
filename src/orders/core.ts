@@ -277,21 +277,37 @@ async function buildClient(
 	const tokenIds = { schwabUserId: config.SCHWAB_USER_ID }
 
 	const adoptFreshest = async (): Promise<boolean> => {
-		const freshest = await kvToken.loadFreshest()
+		const freshest = await kvToken.loadFreshestEntry()
 		if (!freshest) return false
-		await kvToken.save(tokenIds, freshest)
-		await kvToken.saveTimestamp(tokenIds)
+		await kvToken.save(tokenIds, freshest.data)
+		// Inherit the source mint time so the alias key never looks fresher than
+		// the token it is a copy of.
+		await kvToken.saveTimestamp(tokenIds, freshest.ts)
 		return true
 	}
 
 	// schwabUserId rotates per re-auth, so the SCHWAB_USER_ID key (which may be
-	// a static placeholder like "orders-static") is just an alias — on a miss,
-	// adopt the most recently written token.
+	// a static placeholder like "orders-static") is just an alias. Adopt not only
+	// when the alias is empty but whenever KV holds a NEWER token: a re-auth
+	// revokes the refresh token the alias is holding, so a present-but-dead copy
+	// is the common case, not the rare one.
 	let adopted = false
 	let existing = await kvToken.load(tokenIds)
-	if (!existing) {
+	const ownTs = existing ? await kvToken.getTimestamp(tokenIds) : null
+	if (!existing || ownTs === null) {
 		adopted = await adoptFreshest()
 		if (adopted) existing = await kvToken.load(tokenIds)
+	} else {
+		const freshest = await kvToken.loadFreshestEntry()
+		if (freshest && freshest.ts > ownTs) {
+			ordersLogger.info(
+				'[orders] A newer token exists in KV — adopting it for the alias key',
+			)
+			await kvToken.save(tokenIds, freshest.data)
+			await kvToken.saveTimestamp(tokenIds, freshest.ts)
+			existing = freshest.data
+			adopted = true
+		}
 	}
 	if (!existing) {
 		return {

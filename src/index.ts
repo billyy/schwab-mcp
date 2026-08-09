@@ -28,6 +28,7 @@ import {
 	ENVIRONMENTS,
 	CONTENT_TYPES,
 	APP_SERVER_NAME,
+	REFRESH_TOKEN_TTL_MS,
 } from './shared/constants'
 import { makeKvTokenStore, type TokenIdentifiers } from './shared/kvTokenStore'
 import { logger, buildLogger, type PinoLogLevel } from './shared/log'
@@ -153,34 +154,49 @@ export class MyMCP extends DurableMCP<MyMCPProps, Env> {
 				this.mcpLogger.debug('ETM: Token load from KV complete', {
 					keyPrefix: sanitizeKeyForLog(kvToken.kvKey(tokenIds)),
 				})
+				let ownTs = tokenData ? await kvToken.getTimestamp(tokenIds) : null
 
-				if (tokenData) {
-					const stale = await kvToken.isTokenStale(tokenIds)
-					if (stale) {
-						this.mcpLogger.warn(
-							'Refresh token is stale (>7 days), clearing token to trigger re-auth',
-							{ keyPrefix: sanitizeKeyForLog(kvToken.kvKey(tokenIds)) },
-						)
-						await kvToken.clearToken(tokenIds)
-						tokenData = null
-					}
+				if (
+					tokenData &&
+					(ownTs === null || Date.now() - ownTs > REFRESH_TOKEN_TTL_MS)
+				) {
+					this.mcpLogger.warn(
+						'Refresh token is stale (>7 days), clearing token to trigger re-auth',
+						{ keyPrefix: sanitizeKeyForLog(kvToken.kvKey(tokenIds)) },
+					)
+					await kvToken.clearToken(tokenIds)
+					tokenData = null
+					ownTs = null
 				}
 
-				// Fallback: schwabUserId rotates on every re-auth, so the refresh
-				// automation writes fresh tokens under NEW keys this session's ids
-				// can't see. Adopt the freshest token in KV and copy it to our key
-				// so subsequent ETM saves land somewhere consistent.
-				if (!tokenData) {
-					const freshest = await kvToken.loadFreshest()
-					if (freshest) {
-						this.mcpLogger.info(
-							'Own token key empty/stale — adopting freshest KV token',
-							{ keyPrefix: sanitizeKeyForLog(kvToken.kvKey(tokenIds)) },
-						)
-						await kvToken.save(tokenIds, freshest)
-						await kvToken.saveTimestamp(tokenIds)
-						tokenData = freshest
-					}
+				// Adopt whenever KV holds a STRICTLY NEWER token than our own copy —
+				// not merely when our key is empty or aged out.
+				//
+				// schwabUserId rotates on every re-auth, so automation/refresh.ts
+				// writes each new token under a key this session cannot see. That
+				// re-auth also REVOKES the refresh token we are holding, leaving our
+				// copy simultaneously recent and dead. Age can never detect that, and
+				// the adopt path used to re-stamp its copy as brand new, which pinned
+				// the session to a revoked token for a further 7 days. Comparing mint
+				// times is what makes a re-auth visible here.
+				const freshest = await kvToken.loadFreshestEntry()
+				if (freshest && (ownTs === null || freshest.ts > ownTs)) {
+					this.mcpLogger.info(
+						'A newer token exists in KV — adopting it for this session',
+						{
+							keyPrefix: sanitizeKeyForLog(kvToken.kvKey(tokenIds)),
+							ownAgeMinutes:
+								ownTs === null
+									? null
+									: Math.round((Date.now() - ownTs) / 60000),
+						},
+					)
+					await kvToken.save(tokenIds, freshest.data)
+					// Inherit the source's mint time. A copy of a 6-day-old refresh
+					// token is still 6 days old; re-stamping it would hide its expiry
+					// and suppress the staleness check above.
+					await kvToken.saveTimestamp(tokenIds, freshest.ts)
+					tokenData = freshest.data
 				}
 
 				return tokenData
