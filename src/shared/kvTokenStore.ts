@@ -21,7 +21,13 @@ export interface KvTokenStore<T = any> {
 		fromIds: TokenIdentifiers,
 		toIds: TokenIdentifiers,
 	): Promise<void>
-	saveTimestamp(ids: TokenIdentifiers): Promise<void>
+	/**
+	 * Record when this token was minted. Pass `ts` to inherit an existing mint
+	 * time (see loadFreshestEntry) instead of restarting the 7-day clock.
+	 */
+	saveTimestamp(ids: TokenIdentifiers, ts?: number): Promise<void>
+	/** Mint time of the token at `ids`, or null if it has never been stamped. */
+	getTimestamp(ids: TokenIdentifiers): Promise<number | null>
 	isTokenStale(ids: TokenIdentifiers): Promise<boolean>
 	clearToken(ids: TokenIdentifiers): Promise<void>
 	/**
@@ -31,6 +37,20 @@ export interface KvTokenStore<T = any> {
 	 * each run while existing sessions still look up their old key.
 	 */
 	loadFreshest(): Promise<T | null>
+	/**
+	 * loadFreshest() plus the mint time and key it came from. Callers need the
+	 * timestamp to decide whether KV holds anything NEWER than their own copy —
+	 * the only reliable way to notice that a full re-auth has revoked the
+	 * refresh token they are holding. See loadTokenForETM() in src/index.ts.
+	 */
+	loadFreshestEntry(): Promise<FreshestEntry<T> | null>
+}
+
+export interface FreshestEntry<T> {
+	data: T
+	/** Epoch ms the token was written, from its `token_ts:` companion key. */
+	ts: number
+	key: string
 }
 
 /**
@@ -72,11 +92,16 @@ export function makeKvTokenStore<T = any>(kv: KVNamespace): KvTokenStore<T> {
 				})
 			}
 		},
-		saveTimestamp: async (ids: TokenIdentifiers) => {
+		saveTimestamp: async (ids: TokenIdentifiers, ts?: number) => {
 			const tsKey = `${TOKEN_TIMESTAMP_KEY_PREFIX}${sdkStore.generateKey(ids)}`
-			await kv.put(tsKey, String(Date.now()), {
+			await kv.put(tsKey, String(ts ?? Date.now()), {
 				expirationTtl: TTL_31_DAYS,
 			})
+		},
+		getTimestamp: async (ids: TokenIdentifiers) => {
+			const tsKey = `${TOKEN_TIMESTAMP_KEY_PREFIX}${sdkStore.generateKey(ids)}`
+			const storedAt = Number(await kv.get(tsKey))
+			return Number.isFinite(storedAt) && storedAt > 0 ? storedAt : null
 		},
 		isTokenStale: async (ids: TokenIdentifiers) => {
 			const tsKey = `${TOKEN_TIMESTAMP_KEY_PREFIX}${sdkStore.generateKey(ids)}`
@@ -95,34 +120,44 @@ export function makeKvTokenStore<T = any>(kv: KVNamespace): KvTokenStore<T> {
 				tokenKey,
 			})
 		},
-		loadFreshest: async () => {
-			// 'token_ts:' does not share the 'token:' prefix, so this lists tokens only
-			const list = await (kv as any).list({ prefix: TOKEN_KEY_PREFIX })
-			let best: { key: string; ts: number } | null = null
-			for (const entry of list.keys ?? []) {
-				const ts = Number(
-					await kv.get(`${TOKEN_TIMESTAMP_KEY_PREFIX}${entry.name}`),
-				)
-				if (!Number.isFinite(ts) || ts <= 0) continue
-				if (!best || ts > best.ts) best = { key: entry.name, ts }
-			}
-			if (!best) return null
-			if (Date.now() - best.ts > REFRESH_TOKEN_TTL_MS) {
-				logger.warn('Freshest KV token is stale (>7 days)', { key: best.key })
-				return null
-			}
-			const raw = await kv.get(best.key)
-			if (!raw) return null
-			logger.info('Loaded freshest KV token as fallback', {
-				key: best.key,
-				ageMinutes: Math.round((Date.now() - best.ts) / 60000),
-			})
-			try {
-				return JSON.parse(raw) as T
-			} catch {
-				return null
-			}
-		},
+		loadFreshest: async () => (await loadFreshestEntry())?.data ?? null,
+		loadFreshestEntry,
+	}
+
+	async function loadFreshestEntry(): Promise<FreshestEntry<T> | null> {
+		// 'token_ts:' does not share the 'token:' prefix, so this lists tokens only
+		const list = await (kv as any).list({ prefix: TOKEN_KEY_PREFIX })
+		const entries: { name: string }[] = list.keys ?? []
+		// Fetched in parallel: this runs on every token load (not just on a miss),
+		// and each refresh run adds another token: key, so serial gets would put
+		// dozens of round-trips in front of every Schwab call.
+		const stamps = await Promise.all(
+			entries.map(async (entry) => ({
+				key: entry.name,
+				ts: Number(await kv.get(`${TOKEN_TIMESTAMP_KEY_PREFIX}${entry.name}`)),
+			})),
+		)
+		let best: { key: string; ts: number } | null = null
+		for (const { key, ts } of stamps) {
+			if (!Number.isFinite(ts) || ts <= 0) continue
+			if (!best || ts > best.ts) best = { key, ts }
+		}
+		if (!best) return null
+		if (Date.now() - best.ts > REFRESH_TOKEN_TTL_MS) {
+			logger.warn('Freshest KV token is stale (>7 days)', { key: best.key })
+			return null
+		}
+		const raw = await kv.get(best.key)
+		if (!raw) return null
+		logger.info('Loaded freshest KV token as fallback', {
+			key: best.key,
+			ageMinutes: Math.round((Date.now() - best.ts) / 60000),
+		})
+		try {
+			return { data: JSON.parse(raw) as T, ts: best.ts, key: best.key }
+		} catch {
+			return null
+		}
 	}
 }
 
