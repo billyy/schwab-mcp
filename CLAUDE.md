@@ -229,6 +229,33 @@ and `SCHWAB_USER_ID` secrets are set. Docs:
 - `docs/TRADING_AGENT.md` — optional instructions for a read-only Claude agent
   that drafts order proposals for the CLI to execute
 
+## Option trades
+
+Option orders go through the same LLM-free path as equity, with two rules that
+are structural, not stylistic:
+
+1. **A roll is one net-priced two-leg order** (`NET_CREDIT`/`NET_DEBIT`/
+   `NET_ZERO`, `BUY_TO_CLOSE` + `SELL_TO_OPEN`), never two single-leg orders.
+   Two orders can half-fill; inverted, they leave the account briefly short an
+   uncovered call. A net price also **requires** a real
+   `complexOrderStrategyType` — `VERTICAL` (one expiry), `CALENDAR` (one
+   strike), `DIAGONAL` (both differ). With `NONE` Schwab reads `price` as a
+   plain limit price and rejects it with "Limit price must be populated only
+   for limit orders."
+2. **`checkOptionCoverage()` (`src/orders/core.ts`) is the safety net, not
+   `ORDER_MAX_NOTIONAL`.** For a net-priced spread the notional is the premium
+   exchanged (~$420), while the assignment exposure is the strike × 100
+   (~$38,500). Only the coverage check bounds the latter. It runs at proposal
+   time, at approval time, and again inside `placeOne` — the last one because
+   an approval can land hours later, after the backing shares were sold. It
+   fails closed, never nets long calls against short ones, and also refuses an
+   equity `SELL` that would strand a short call.
+
+`cli/drift-diff.mjs --json` emits `optionGaps[]` — priced roll plans with a
+ready-to-submit `order`, or `reasons[]` explaining why a divergence is
+report-only. The 10:00am propose task submits **equity only**; option rolls are
+submitted by hand via `cli/schwab-propose.mjs`. Docs: `docs/DRIFT_APPROVAL.md`
+
 ## Drift Approval (Slack)
 
 `POST /proposals` (`src/proposals/handler.ts`) accepts a batch of orders from

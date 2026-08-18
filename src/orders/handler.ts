@@ -118,7 +118,12 @@ export async function handleOrdersRequest(
 			duplicateOpenOrder: preview.duplicateOpenOrder
 				? scrubAccountIdentifiers(preview.duplicateOpenOrder, displayMap)
 				: null,
-			next: 'POST again with {"submit": true, "orderHash": "<orderHash>"} to place this order.',
+			// Surfaced at preview so a coverage problem is visible before the
+			// confirm prompt; it is re-checked and enforced at submit.
+			coverage: preview.coverage,
+			next: preview.coverage.ok
+				? 'POST again with {"submit": true, "orderHash": "<orderHash>"} to place this order.'
+				: 'This order will be refused at submit until the coverage problem above is resolved.',
 		})
 	}
 
@@ -143,6 +148,8 @@ export async function handleOrdersRequest(
 				})
 			case 'dailyCap':
 				return jsonResponse(429, { error: placed.error })
+			case 'coverage':
+				return jsonResponse(403, { error: placed.error })
 			case 'schwab':
 				return jsonResponse(
 					placed.schwabStatus && placed.schwabStatus >= 400 ? 502 : 500,

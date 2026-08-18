@@ -130,6 +130,16 @@ export async function executeProposal(
 				}
 				continue
 			}
+			// Positions may have moved since the proposal was built — e.g. the
+			// shares backing a short call were sold during the approval window.
+			if (!preview.coverage.ok) {
+				po.result = {
+					ok: false,
+					stage: 'coverage',
+					error: preview.coverage.error,
+				}
+				continue
+			}
 			const placed = await placeOne(ctx, accountHash, po.order, {
 				allowDuplicate: proposal.allowDuplicate,
 			})

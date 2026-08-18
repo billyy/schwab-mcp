@@ -140,16 +140,33 @@ export async function handleRebalanceSnapshot(
 		accounts.push(slim)
 	}
 
-	// Live bid/ask for every equity symbol held in any requested account
-	const equitySymbols = [
+	// Live bid/ask for every symbol held in any requested account
+	const symbolsOfType = (assetType: string) => [
 		...new Set(
 			accounts.flatMap((a) =>
 				(a.positions as SlimPosition[])
-					.filter((p) => p.assetType === 'EQUITY')
+					.filter((p) => p.assetType === assetType)
 					.map((p) => p.symbol),
 			),
 		),
 	]
+	const equitySymbols = symbolsOfType('EQUITY')
+	const optionSymbols = symbolsOfType('OPTION')
+
+	const slimQuote = (q: any) => ({
+		bid: q?.quote?.bidPrice ?? null,
+		ask: q?.quote?.askPrice ?? null,
+		last: q?.quote?.lastPrice ?? null,
+		// Prior regular-session close: the stable price to size
+		// notionals against when the regular market is not open.
+		close: q?.quote?.closePrice ?? null,
+		// Schwab's own mid/theoretical value. Reported so a caller can show
+		// what crossing the spread gives up — wide option spreads make that
+		// difference the whole story.
+		mark: q?.quote?.mark ?? null,
+		status: q?.quote?.securityStatus ?? null,
+	})
+
 	let quotes: Record<string, unknown> = {}
 	const statuses: (string | null)[] = []
 	if (equitySymbols.length > 0) {
@@ -159,15 +176,7 @@ export async function handleRebalanceSnapshot(
 			})) as Record<string, any>
 			for (const [symbol, q] of Object.entries(raw)) {
 				statuses.push(q?.quote?.securityStatus ?? null)
-				quotes[symbol] = {
-					bid: q?.quote?.bidPrice ?? null,
-					ask: q?.quote?.askPrice ?? null,
-					last: q?.quote?.lastPrice ?? null,
-					// Prior regular-session close: the stable price to size
-					// notionals against when the regular market is not open.
-					close: q?.quote?.closePrice ?? null,
-					status: q?.quote?.securityStatus ?? null,
-				}
+				quotes[symbol] = slimQuote(q)
 			}
 		} catch (error) {
 			rebalanceLogger.warn('Snapshot quotes fetch failed', {
@@ -175,6 +184,47 @@ export async function handleRebalanceSnapshot(
 			})
 			quotes = { error: 'quotes unavailable' }
 		}
+	}
+
+	// Option quotes are fetched separately and merged in, so that an option
+	// quote failure degrades option pricing only. Folding them into the call
+	// above would flip `pricesTradable` to false and cost the equity drift run
+	// its whole window over contracts it never prices.
+	const optionQuotes: {
+		requested: number
+		returned: number
+		ok: boolean
+		error?: string
+	} = { requested: optionSymbols.length, returned: 0, ok: true }
+	if (optionSymbols.length > 0 && !('error' in quotes)) {
+		try {
+			const raw = (await ctx.client.marketData.quotes.getQuotes({
+				queryParams: { symbols: optionSymbols, fields: ['quote'] },
+			})) as Record<string, any>
+			for (const [symbol, q] of Object.entries(raw)) {
+				quotes[symbol] = {
+					...slimQuote(q),
+					openInterest: q?.quote?.openInterest ?? null,
+				}
+				optionQuotes.returned++
+			}
+			// A partial return means some contract went unpriced — say so
+			// rather than letting the caller read a missing key as "no gap".
+			optionQuotes.ok = optionQuotes.returned === optionSymbols.length
+			if (!optionQuotes.ok) {
+				optionQuotes.error = `Schwab returned ${optionQuotes.returned} of ${optionSymbols.length} option quotes`
+			}
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error)
+			rebalanceLogger.warn('Snapshot option quotes fetch failed', {
+				error: message,
+			})
+			optionQuotes.ok = false
+			optionQuotes.error = `option quotes unavailable: ${message}`
+		}
+	} else if (optionSymbols.length > 0) {
+		optionQuotes.ok = false
+		optionQuotes.error = 'skipped: the equity quote fetch failed'
 	}
 
 	// Session classification: Schwab's calendar first (holidays + early
@@ -189,6 +239,10 @@ export async function handleRebalanceSnapshot(
 		// with no quotes must not pass the caller's "safe to price limits"
 		// guard.
 		pricesTradable: marketSession === 'REGULAR' && !('error' in quotes),
+		// Scoped to the option leg of pricing: `pricesTradable` stays the
+		// equity gate, so an option quote outage never blocks equity orders.
+		// Callers must check this before pricing any option limit.
+		optionQuotes,
 		accounts: scrubAccountIdentifiers(accounts, ctx.displayMap) as any,
 		quotes,
 	})

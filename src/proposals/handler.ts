@@ -229,6 +229,14 @@ export async function handleProposalsRequest(
 				),
 			})
 		}
+		// A covered-call roll must not be approvable if it strands a short call.
+		// Re-checked at execution too — this one stops a bad batch from ever
+		// reaching Slack, where the numbers are no longer obvious.
+		if (!preview.coverage.ok) {
+			return jsonResponse(403, {
+				error: `Order ${index}: ${preview.coverage.error}`,
+			})
+		}
 		const guard = checkGuardrails(config, orderBody, { requirePrice: true })
 		proposalOrders.push({
 			order: orderBody,
@@ -237,6 +245,7 @@ export async function handleProposalsRequest(
 			symbols: guard.ok ? guard.symbols : [],
 			notional: guard.ok ? guard.notional : null,
 			previewStatus: preview.schwabPreview.status,
+			coverageChecked: preview.coverage.ok && preview.coverage.checked,
 		})
 	}
 
@@ -260,6 +269,7 @@ export async function handleProposalsRequest(
 				notional: o.notional,
 				orderHash: o.orderHash,
 				previewStatus: o.previewStatus,
+				coverageChecked: o.coverageChecked,
 			})),
 		})
 	}
@@ -326,6 +336,7 @@ export async function handleProposalsRequest(
 			symbols: o.symbols,
 			notional: o.notional,
 			previewStatus: o.previewStatus,
+			coverageChecked: o.coverageChecked,
 		})),
 	})
 }
