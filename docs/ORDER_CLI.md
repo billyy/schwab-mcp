@@ -115,6 +115,41 @@ Option order (buy 1 call to open):
 }
 ```
 
+Multi-leg option spread — rolling a covered call, priced net:
+
+```json
+{
+  "accountNumber": "<hashValue>",
+  "session": "NORMAL",
+  "duration": "DAY",
+  "orderType": "NET_CREDIT",
+  "price": 4.2,
+  "complexOrderStrategyType": "DIAGONAL",
+  "orderStrategyType": "SINGLE",
+  "orderLegCollection": [
+    {
+      "instruction": "BUY_TO_CLOSE",
+      "quantity": 1,
+      "instrument": { "symbol": "JPM   260821C00360000", "assetType": "OPTION" }
+    },
+    {
+      "instruction": "SELL_TO_OPEN",
+      "quantity": 1,
+      "instrument": { "symbol": "JPM   261218C00385000", "assetType": "OPTION" }
+    }
+  ]
+}
+```
+
+Both legs fill or neither does. `price` is the **net** premium for one spread
+(`NET_CREDIT` = received, `NET_DEBIT` = paid, `NET_ZERO` = even), not a per-leg
+price.
+
+`complexOrderStrategyType` must name the real strategy — `VERTICAL` (one
+expiry), `CALENDAR` (one strike), `DIAGONAL` (both differ). With `NONE` Schwab
+reads `price` as a plain limit price and rejects the order with `"Limit price
+must be populated only for limit orders."`
+
 Field notes:
 
 - `accountNumber` — accepts either the plain account number or the
@@ -137,9 +172,11 @@ optional env vars / secrets):
 | API key | `ORDER_API_KEY` | Constant-time compared; 401 on mismatch |
 | Schema | — | Zod-validated; field-level errors on 400 |
 | Symbol allowlist | `ORDER_SYMBOL_ALLOWLIST` (csv) | 403 if any leg's underlying isn't listed |
-| Max notional | `ORDER_MAX_NOTIONAL` (USD) | 403 if `price × qty` (×100 for options) exceeds it; MARKET orders rejected when set |
+| Max notional | `ORDER_MAX_NOTIONAL` (USD) | 403 if `price × qty` (×100 for options) exceeds it; MARKET orders rejected when set. For a net-priced spread this is the premium exchanged, counted once per spread — **not** the assignment exposure of the short leg |
+| Option structure | — | 400/403 on a non-OCC symbol, an expired contract, a plain `BUY`/`SELL` on an option leg, mixed underlyings, mixed equity+option legs, an unbalanced (ratio) spread, or a multi-leg spread not priced net |
+| Covered calls | — | 403 if the order would leave short calls unbacked by shares — including an equity `SELL` that strands an existing short call. Checked against live positions at preview and again immediately before submit; fails closed if positions can't be read |
 | Daily cap | `ORDER_DAILY_CAP` (default 10) | 429 once the UTC-day submit count is hit |
-| Duplicate | — | 409 if an identical open order exists (`"allowDuplicate": true` overrides) |
+| Duplicate | — | 409 if an identical open order exists (`"allowDuplicate": true` overrides); leg **sets** are compared, so a spread with its legs reordered is still a duplicate |
 | Preview binding | — | Submit requires the `orderHash` from the preview; 409 otherwise |
 | Audit | — | Every submit written to KV (`audit:order:*`, 90-day TTL) |
 

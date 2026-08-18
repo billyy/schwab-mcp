@@ -6,8 +6,9 @@ deterministic worker code — **no LLM is involved in placing trades**.
 
 ```
 Cowork task ──POST /proposals (Bearer ORDER_API_KEY)──▶ Worker
-   validate → guardrails → Schwab preview each order → store in ProposalStore DO
+   validate → guardrails → Schwab preview each order
    → Slack message (delta + orders + Approve/Reject buttons)
+   → store in ProposalStore DO (one write, already carrying the message ts)
 You click Approve ──Slack──▶ POST /slack/interactions
    verify Slack signature → approver allowlist → atomic claim
    → execute each order via the same guarded path as POST /orders
@@ -48,7 +49,9 @@ lookup as `schwab-order.mjs`).
 Rules:
 
 - **LIMIT orders only.** Priceless (MARKET) orders are always rejected on this
-  endpoint — a stale market order approved hours later is unbounded risk.
+  endpoint — a stale market order approved hours later is unbounded risk. A
+  multi-leg option spread satisfies this with a net price (`NET_CREDIT`,
+  `NET_DEBIT`, `NET_ZERO`) — see [Option rolls](#option-rolls).
 - `accountNumber` (plain number or hashValue) can be set per order or once at
   the proposal level. It is re-resolved at execution, so hashValue rotation is
   harmless.
@@ -73,14 +76,144 @@ Response:
   "expiresAt": "…",
   "superseded": ["…"],
   "orders": [
-    { "orderHash": "…", "symbols": ["SCHW"], "notional": 5580, "previewStatus": 200 }
+    {
+      "orderHash": "…",
+      "symbols": ["SCHW"],
+      "notional": 5580,
+      "previewStatus": 200,
+      "coverageChecked": false
+    }
   ]
 }
 ```
 
+`coverageChecked` is `true` when the covered-call check actually inspected
+positions for that order. `false` means it was not applicable — nothing in the
+order can reduce coverage — never that it was skipped: a failed check rejects
+the whole batch with a 403. It is re-run at execution either way.
+
 Errors: `400` validation/preview failure (per-index `issues`), `401` bad key,
-`403` guardrail, `409` duplicate open order, `429` daily cap, `502` Slack post
-failed, `503` feature not configured.
+`403` guardrail or coverage failure, `409` duplicate open order or non-regular
+session, `429` daily cap, `502` Slack post failed, `503` feature not
+configured.
+
+## Option rolls
+
+The four live option divergences are all covered-call **rolls**: close a
+near-dated short call, open a later or higher-strike one. A roll is submitted
+as **one net-priced two-leg order**, never as two single-leg orders:
+
+```json
+{
+  "session": "NORMAL",
+  "duration": "DAY",
+  "orderType": "NET_CREDIT",
+  "price": 4.2,
+  "complexOrderStrategyType": "DIAGONAL",
+  "orderStrategyType": "SINGLE",
+  "orderLegCollection": [
+    {
+      "instruction": "BUY_TO_CLOSE",
+      "quantity": 1,
+      "instrument": { "symbol": "JPM   260821C00360000", "assetType": "OPTION" }
+    },
+    {
+      "instruction": "SELL_TO_OPEN",
+      "quantity": 1,
+      "instrument": { "symbol": "JPM   261218C00385000", "assetType": "OPTION" }
+    }
+  ]
+}
+```
+
+Both legs fill or neither does. Two separate orders can half-fill, and if the
+ordering ever inverted the account would be briefly short an uncovered call —
+the one outcome this pipeline must never produce.
+
+**`complexOrderStrategyType` is required and must name the real strategy.** It
+is not cosmetic: left as `NONE` (or unset) Schwab treats the order as a simple
+one, reads `price` as a plain limit price, and rejects it with the misleading
+`"Limit price must be populated only for limit orders."` `checkOptionStructure`
+now catches this locally so the error names the actual cause.
+
+The two-leg classification, which `drift-diff` computes as
+`optionGaps[].rollType` and puts straight into the order body:
+
+| Legs differ by | Value |
+| --- | --- |
+| Strike only (one expiry) | `VERTICAL` |
+| Expiry only (one strike) | `CALENDAR` |
+| Both | `DIAGONAL` |
+
+Not `VERTICAL_ROLL` — that value is for rolling an entire vertical, four legs.
+Stripped of the roll framing, a two-leg same-expiry package is just a vertical:
+long the lower strike, short the higher, hence a debit.
+
+Verified 2026-08-18 against Schwab's `previewOrder`: `VERTICAL` + `NET_DEBIT` +
+`price` returns 200; the same order with `NONE` returns 400.
+
+### Where roll plans come from
+
+`node cli/drift-diff.mjs --json` emits `optionGaps[]`, one entry per option
+divergence, each with `proposable`, `reasons[]`, and a ready-to-submit
+`order`. Copy a proposable entry's `order` into a proposal file's `orders`
+array and run `cli/schwab-propose.mjs`.
+
+Pricing crosses both legs — buy the closing leg at its **ask**, sell the
+opening leg at its **bid** — the same convention the equity path uses. The plan
+also reports `netAtMid` and `givesUp` so the approver can see what crossing
+costs versus the mids.
+
+A divergence is **report-only** (not proposable) when any of these hold, each
+named in `reasons[]`:
+
+| Reason | Why |
+| --- | --- |
+| Not a 1:1 close/open pair | A ratio change or multi-contract reshuffle is not a roll; a wrong pairing is a naked short. |
+| Not both calls | Shares cannot cover a put, so this path does not price one. |
+| Long option inventory involved | Only plain short-call rolls are modeled. |
+| Coverage would break | Resulting short calls would exceed shares ÷ 100. |
+| Leg quote not `Normal`, one-sided, or crossed | A frozen quote is not a limit basis. |
+| Spread wider than 25% of mid (above a $0.10 floor) | Crossing a thin option spread is where a "conservative" limit becomes a bad fill. |
+| Expiry already past | The contract is untradeable and the position needs manual review. |
+| Policy-excluded underlying (`BSX`) | Held elsewhere; surfaced, never actioned. |
+
+Unlike equity gaps, option rolls have **no notional floor**. The $1,000 equity
+threshold filters rounding noise; an option divergence is a whole position, so
+a $200 net credit still moves a 100-share obligation and is judged on quote
+quality and coverage instead of size.
+
+### The covered-call guard
+
+Every order that touches an option — or that **sells equity** — is checked
+against live positions before placement, in `checkOptionCoverage`:
+
+- Resulting short calls per underlying must be backed by shares (`contracts ×
+  100`). A roll that would strand a short call is refused with the numbers.
+- Long calls never count as cover. Netting them against shorts would let a
+  cheap far-OTM long "cover" a near-the-money short.
+- Short **puts** are out of scope: shares cannot cover a put, and the backing
+  is cash/buying power, which Schwab's own `previewOrder` enforces.
+- It fails **closed** — if positions can't be read, the check has not passed.
+
+It runs three times: at proposal time (so a bad batch never reaches Slack), at
+approval time, and again inside `placeOne` immediately before submission. The
+last one matters most: an approval can land hours after the proposal was built,
+and the shares backing a short call may have been sold in between.
+
+This also closes a hole on the equity side. An equity SELL that would strand an
+existing short call is now refused — previously the drift path could place one
+unnoticed.
+
+### What `ORDER_MAX_NOTIONAL` does and does not bound
+
+For a net-priced spread, `notional` is the **premium exchanged**, counted once
+against the number of spreads (`|price| × contracts × 100`) — not summed per
+leg, which would report a two-leg roll at double its real cash value.
+
+It is not the assignment exposure. A $420 net-credit roll into a 385-strike
+call carries a $38,500 obligation. `ORDER_MAX_NOTIONAL` does not bound that;
+the coverage guard is what keeps it backed by shares.
 
 ## Approving in Slack
 
@@ -94,14 +227,33 @@ Execution details:
 
 - Orders run **sequentially**, each re-checked at approval time: guardrails
   re-run (config may have changed), account re-resolved, fresh Schwab preview,
-  duplicate guard, daily cap — the identical code path as `POST /orders`
-  submit. One failing order does not stop the rest (except the daily cap,
-  which skips all remaining orders).
+  duplicate guard, covered-call check against live positions, daily cap — the
+  identical code path as `POST /orders` submit. One failing order does not stop
+  the rest (except the daily cap, which skips all remaining orders).
 - Final states: `executed` (all placed), `partial`, `failed`, `rejected`,
   `expired`, `superseded`.
 - Source of truth is the ProposalStore record plus KV audit entries
   (`audit:proposal:<ISO>:<id8>` and the usual `audit:order:…` per placement,
   90-day retention). A failed Slack update never re-triggers placement.
+
+### Why the Slack post happens before the store write
+
+The message goes up first, then the record is written once, already carrying
+the message's `channel`/`ts`. This is ordering for crash-safety, not style.
+
+Storing first left two ways to orphan a proposal whenever the isolate died in
+between — and a `wrangler dev` reload mid-request is enough to do it:
+
+- a `pending` record with no message, which nothing can approve and nothing
+  clears (it lingers until a later proposal supersedes it), or
+- a live message whose record never received its Slack coordinates, so
+  approving it places the orders while the message still shows its buttons.
+
+Posting first removes both: until the message exists there is nothing to roll
+back, and the record is written exactly once. The one remaining window —
+message posted, store write failed — fails closed. The buttons carry an id the
+store does not have, `claim` answers `not_found`, nothing is placed, and the
+handler withdraws the message to say so.
 
 ## Helper endpoints for the drift scheduled task
 
@@ -111,10 +263,19 @@ that replaced the sandboxed Cowork job:
 - `GET /rebalance/snapshot?accounts=<num>,<num>` — read-only: scrubbed
   display name, liquidation value, cash, slimmed positions
   (symbol/assetType/long/short/marketValue) per account, plus live quotes
-  for the union of equity symbols. One call supplies everything drift
-  analysis and limit pricing need.
+  for the union of equity **and option** symbols. One call supplies everything
+  drift analysis and limit pricing need.
 
-  Each quote is `{bid, ask, last, close, status}`, and the response carries a
+  Option quotes are fetched in a **separate** call and merged into the same
+  `quotes` map, keyed by OCC symbol, each carrying an extra `openInterest`.
+  The split is deliberate: folding them into the equity call would let an
+  option-quote outage flip `pricesTradable` to false and cost the equity drift
+  run its whole window over contracts it never prices. Their health is reported
+  independently as `optionQuotes: {requested, returned, ok, error?}` — check it
+  before pricing any option limit. `ok` is false on a partial return too, so a
+  missing quote is never read as "no gap".
+
+  Each quote is `{bid, ask, last, close, mark, status}`, and the response carries a
   top-level `marketSession` (`PRE`/`REGULAR`/`POST`/`CLOSED`), `sessionSource`
   (`calendar`/`clock`), and `pricesTradable`. **Callers must not derive limit
   prices from `bid`/`ask` unless `pricesTradable` is true** — outside the

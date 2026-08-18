@@ -1,7 +1,8 @@
-import { secureCompare } from '../orders/core'
+import { NET_ORDER_TYPES, secureCompare } from '../orders/core'
 import { type ProposalRecord, type ProposalOrder } from '../proposals/types'
 import { SLACK_API_BASE_URL, LOGGER_CONTEXTS } from './constants'
 import { logger } from './log'
+import { describeOccSymbol, parseOccSymbol } from './optionSymbol'
 
 const slackLogger = logger.child(LOGGER_CONTEXTS.PROPOSALS)
 
@@ -101,21 +102,78 @@ function usd(n: number): string {
 	return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
-/** One-line human description of an order, e.g. "LIMIT BUY 10 × VTI @ $250.00 — ~$2,500.00" */
+/** Short forms so a two-leg roll still fits one readable Slack line */
+const INSTRUCTION_SHORT: Record<string, string> = {
+	BUY_TO_OPEN: 'BTO',
+	BUY_TO_CLOSE: 'BTC',
+	SELL_TO_OPEN: 'STO',
+	SELL_TO_CLOSE: 'STC',
+}
+
+/**
+ * One-line human description of an order:
+ *   "LIMIT BUY 10 × VTI @ $250.00 — ~$2,500.00"
+ *   "NET_CREDIT JPM roll: BTC 1 × 08/21/26 360C, STO 1 × 12/18/26 385C @ $4.20 credit — ~$420.00"
+ *
+ * The approver decides from this line, so an option order must show what it
+ * closes, what it opens, and which way the cash moves. A raw OCC symbol
+ * ("JPM   261218C00385000") does not read as a date and a strike at a glance.
+ */
 export function describeOrder(po: ProposalOrder): string {
 	const order = po.order as any
 	const legs: any[] = order.orderLegCollection ?? []
+	const isNet = NET_ORDER_TYPES.has(order.orderType)
+
+	// A spread's legs share an underlying — name it once, then let each leg
+	// show only its expiry and strike.
+	const underlyings = new Set(
+		legs
+			.map((leg) => parseOccSymbol(leg?.instrument?.symbol ?? ''))
+			.filter((p): p is NonNullable<typeof p> => p !== null)
+			.map((p) => p.underlying),
+	)
+	const sharedUnderlying =
+		legs.length > 1 && underlyings.size === 1 ? [...underlyings][0]! : null
+
 	const legText = legs
 		.map((leg) => {
 			const qty = leg?.quantity ?? '?'
 			const symbol = leg?.instrument?.symbol ?? '?'
 			const instruction = leg?.instruction ?? '?'
-			return `${instruction} ${qty} × ${symbol}`
+			const short = INSTRUCTION_SHORT[instruction] ?? instruction
+			let described = describeOccSymbol(symbol)
+			if (sharedUnderlying && described.startsWith(`${sharedUnderlying} `)) {
+				described = described.slice(sharedUnderlying.length + 1)
+			}
+			return `${short} ${qty} × ${described}`
 		})
 		.join(', ')
-	const price = typeof order.price === 'number' ? ` @ ${usd(order.price)}` : ''
-	const notional = po.notional !== null ? ` — ~${usd(po.notional)}` : ''
-	return `${order.orderType ?? '?'} ${legText}${price}${notional}`
+
+	// "roll" only for the shape that is one: close one contract, open another.
+	const isRoll =
+		legs.length === 2 &&
+		legs.some((l) => l?.instruction === 'BUY_TO_CLOSE') &&
+		legs.some((l) => l?.instruction === 'SELL_TO_OPEN')
+	const prefix = sharedUnderlying
+		? `${order.orderType ?? '?'} ${sharedUnderlying} ${isRoll ? 'roll' : 'spread'}: `
+		: `${order.orderType ?? '?'} `
+	let price = ''
+	if (typeof order.price === 'number') {
+		const direction =
+			order.orderType === 'NET_CREDIT'
+				? ' credit'
+				: order.orderType === 'NET_DEBIT'
+					? ' debit'
+					: ''
+		price = ` @ ${usd(order.price)}${direction}`
+	} else if (order.orderType === 'NET_ZERO') {
+		price = ' @ even'
+	}
+	const notional =
+		po.notional !== null
+			? ` — ${isNet ? 'net ' : ''}~${usd(po.notional)}`
+			: ''
+	return `${prefix}${legText}${price}${notional}`
 }
 
 function totalNotional(p: ProposalRecord): number {

@@ -21,8 +21,21 @@ export interface ProposalOrder {
 	notional: number | null
 	/** Schwab preview HTTP status at proposal time (null if the call errored) */
 	previewStatus: number | null
+	/**
+	 * Whether the covered-call check actually inspected positions at proposal
+	 * time. False means it was not applicable (nothing here can reduce
+	 * coverage), never that it was skipped — a failed check rejects the batch.
+	 * Re-run at execution regardless.
+	 */
+	coverageChecked: boolean
 	/** Execution result, filled in by the executor */
-	result?: PlaceOutcome | { ok: false; stage: 'skipped' | 'guardrail' | 'account' | 'preview'; error: string }
+	result?:
+		| PlaceOutcome
+		| {
+				ok: false
+				stage: 'skipped' | 'guardrail' | 'account' | 'preview' | 'coverage'
+				error: string
+		  }
 }
 
 export interface ProposalRecord {

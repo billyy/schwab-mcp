@@ -15,6 +15,12 @@
  * CRT is the benchmark and is immutable; every note is framed as a
  * Partnership action.
  *
+ * Equity gaps come with a `limitPrice`; option divergences come with a priced
+ * `optionGaps[].order` — a ready-to-submit net-priced two-leg roll — when the
+ * divergence is a clean 1:1 covered-call roll with usable quotes. Emitting an
+ * order body is not proposing it: submitting is `cli/schwab-propose.mjs`, and
+ * the 10:00am scheduled task submits equity only.
+ *
  * Config (env var wins, falls back to macOS Keychain):
  *   WORKER_URL       default: http://localhost:8788
  *   ORDER_API_KEY    or Keychain: security add-generic-password -s schwab-mcp-order -a api-key -w '<key>'
@@ -30,6 +36,28 @@ const POLICY_EXCLUDED = new Set(['BSX'])
 
 /** Equity gaps below this notional are noise, not rebalance candidates. */
 const PROPOSAL_THRESHOLD = 1000
+
+/**
+ * Option rolls have NO notional floor, unlike equity gaps.
+ *
+ * The $1,000 equity threshold filters rounding noise — a 3-share difference is
+ * not worth a trade. An option divergence is never noise: it is a whole
+ * position that either matches the benchmark or does not. A $200 net credit on
+ * a roll still moves a 100-share obligation from one strike and expiry to
+ * another, so it is judged on quote quality and coverage, never on size.
+ */
+
+/**
+ * A roll is priced by crossing both legs — buy the closing leg at its ask,
+ * sell the opening leg at its bid — the same convention the equity path uses.
+ * Crossing only produces a sane price on a liquid two-sided market, so a leg
+ * whose quote is one-sided, crossed, or wide disqualifies the roll rather than
+ * being quietly priced off. Option spreads are where this matters: an equity
+ * spread is pennies, a thin long-dated option's can be a third of its value.
+ */
+const OPTION_MAX_SPREAD_PCT = 0.25
+/** Below this dollar width, a spread's percentage of a cheap contract is meaningless. */
+const OPTION_SPREAD_ABS_FLOOR = 0.1
 
 /**
  * Reconciliation tolerance: positions + cash vs reported liquidation value.
@@ -258,6 +286,262 @@ function optionDivergences(portfolio, benchmark) {
 	return divergences
 }
 
+/** Whole days from the snapshot date to an expiry date, both YYYY-MM-DD. */
+function daysUntil(asOf, expiry) {
+	const from = Date.parse(`${asOf.slice(0, 10)}T00:00:00Z`)
+	const to = Date.parse(`${expiry}T00:00:00Z`)
+	if (!Number.isFinite(from) || !Number.isFinite(to)) return null
+	return Math.round((to - from) / 86400000)
+}
+
+/**
+ * Validate one leg's quote for use as a limit basis. Returns the usable
+ * numbers, or a reason the leg cannot be priced.
+ */
+function optionLegQuote(snapshot, symbol) {
+	const label = describeOption(symbol)
+	const q = snapshot.quotes?.[symbol]
+	if (!q) {
+		return { ok: false, reason: `no quote returned for ${label}` }
+	}
+	if (q.status !== 'Normal') {
+		return {
+			ok: false,
+			reason: `${label} quote status is ${q.status ?? 'unknown'}, not Normal — its bid/ask is frozen`,
+		}
+	}
+	if (q.bid == null || q.ask == null) {
+		return { ok: false, reason: `${label} has no two-sided quote (bid/ask missing)` }
+	}
+	if (q.ask < q.bid) {
+		return {
+			ok: false,
+			reason: `${label} quote is crossed (bid ${q.bid} > ask ${q.ask})`,
+		}
+	}
+	const mid = (q.bid + q.ask) / 2
+	const spread = q.ask - q.bid
+	if (
+		spread > OPTION_SPREAD_ABS_FLOOR &&
+		mid > 0 &&
+		spread / mid > OPTION_MAX_SPREAD_PCT
+	) {
+		return {
+			ok: false,
+			reason:
+				`${label} spread ${money(spread)} is ${Math.round((spread / mid) * 100)}% of ` +
+				`its ${money(mid)} mid — too wide to cross safely`,
+		}
+	}
+	return {
+		ok: true,
+		bid: q.bid,
+		ask: q.ask,
+		mid: Math.round(mid * 100) / 100,
+		mark: q.mark ?? null,
+		spread: Math.round(spread * 100) / 100,
+		openInterest: q.openInterest ?? null,
+	}
+}
+
+/**
+ * Turn each option divergence into a concrete roll plan, or say why it is not
+ * one. Only the shape this pipeline has been designed for is proposable: a
+ * covered short call closing at one strike/expiry and reopening at another,
+ * 1:1, as a single net-priced two-leg order. Everything else — ratio changes,
+ * puts, long-option inventory, multi-contract reshuffles — is reported with a
+ * reason and left for a human, because a wrong pairing here is a naked short.
+ *
+ * Emitting the order body is not proposing it: nothing is submitted or
+ * previewed from this script.
+ */
+function optionRollPlans(snapshot, portfolio, divergences) {
+	const optionQuotesUsable = snapshot.optionQuotes?.ok !== false
+	return divergences.map((d) => {
+		const reasons = []
+		if (d.excluded) reasons.push('policy-excluded underlying (held elsewhere)')
+		if (!optionQuotesUsable) {
+			reasons.push(
+				`option quotes unavailable in this snapshot (${snapshot.optionQuotes?.error ?? 'unknown'})`,
+			)
+		}
+
+		const closes = d.contracts.filter((c) => c.held > c.target)
+		const opens = d.contracts.filter((c) => c.target > c.held)
+		if (closes.length !== 1 || opens.length !== 1) {
+			reasons.push(
+				`not a 1:1 roll — ${closes.length} contract(s) to close, ${opens.length} to open; needs a human`,
+			)
+		}
+		if (d.contracts.some((c) => c.held < 0 || c.target < 0)) {
+			reasons.push('involves long option inventory, not a plain short-call roll')
+		}
+
+		const close = closes[0]
+		const open = opens[0]
+		const closeParsed = close ? parseOption(close.symbol) : null
+		const openParsed = open ? parseOption(open.symbol) : null
+		if (closeParsed && openParsed) {
+			if (closeParsed.right !== 'C' || openParsed.right !== 'C') {
+				reasons.push(
+					'not a call roll — shares cannot cover a put, so this path does not price it',
+				)
+			}
+		} else if (close && open) {
+			reasons.push('could not parse both contract symbols')
+		}
+
+		const closeQty = close ? close.held - close.target : 0
+		const openQty = open ? open.target - open.held : 0
+		if (close && open && closeQty !== openQty) {
+			reasons.push(
+				`unbalanced: closing ${closeQty} contract(s) but opening ${openQty}`,
+			)
+		}
+		const contracts = closeQty === openQty ? closeQty : null
+
+		// Coverage after the roll, computed the same conservative way the worker
+		// does it: only shares cover, long calls never do.
+		const shares = portfolio.equity.get(d.underlying)?.longQuantity ?? 0
+		let shortCallsNow = 0
+		for (const [symbol, position] of portfolio.options) {
+			const parsed = parseOption(symbol)
+			if (parsed?.underlying !== d.underlying || parsed.right !== 'C') continue
+			shortCallsNow += position.shortQuantity ?? 0
+		}
+		const shortCallsAfter =
+			contracts === null
+				? shortCallsNow
+				: Math.max(0, shortCallsNow - closeQty) + openQty
+		const requiredShares = shortCallsAfter * 100
+		const covered = shares >= requiredShares
+		if (!covered) {
+			reasons.push(
+				`would leave ${shortCallsAfter} short call(s) needing ${requiredShares} shares against ${shares} held`,
+			)
+		}
+
+		// Expiry sanity: a contract past its date is untradeable, and the fact
+		// it is still open means the position itself needs attention.
+		const closeDte = closeParsed ? daysUntil(snapshot.asOf, closeParsed.expiry) : null
+		const openDte = openParsed ? daysUntil(snapshot.asOf, openParsed.expiry) : null
+		if (closeDte !== null && closeDte < 0) {
+			reasons.push(`closing leg expired ${-closeDte} day(s) ago — manual review`)
+		}
+		if (openDte !== null && openDte < 0) {
+			reasons.push('opening leg expiry is in the past — the snapshot is stale')
+		}
+
+		// Price it only when the shape is right; a wide-quote reason on a plan
+		// that was never a roll is noise.
+		let closeQuote = null
+		let openQuote = null
+		let pricing = null
+		if (reasons.length === 0 && close && open && contracts) {
+			closeQuote = optionLegQuote(snapshot, close.symbol)
+			openQuote = optionLegQuote(snapshot, open.symbol)
+			if (!closeQuote.ok) reasons.push(closeQuote.reason)
+			if (!openQuote.ok) reasons.push(openQuote.reason)
+			if (closeQuote.ok && openQuote.ok) {
+				// Cross both legs: pay the ask to close, take the bid to open.
+				const net = openQuote.bid - closeQuote.ask
+				const netMid = openQuote.mid - closeQuote.mid
+				const rounded = Math.round(net * 100) / 100
+				pricing = {
+					orderType:
+						rounded > 0 ? 'NET_CREDIT' : rounded < 0 ? 'NET_DEBIT' : 'NET_ZERO',
+					direction: rounded > 0 ? 'credit' : rounded < 0 ? 'debit' : 'even',
+					netPrice: Math.abs(rounded),
+					netCrossed: rounded,
+					netAtMid: Math.round(netMid * 100) / 100,
+					// What crossing both spreads costs versus trading at the mids.
+					givesUp: Math.round((netMid - rounded) * 100) / 100,
+					notional: Math.abs(rounded) * contracts * 100,
+				}
+			}
+		}
+
+		// Schwab's complexOrderStrategyType for a two-leg package. Same expiry,
+		// different strikes is a VERTICAL — not VERTICAL_ROLL, which is for
+		// rolling an entire vertical (four legs).
+		const rollType =
+			closeParsed && openParsed
+				? closeParsed.expiry === openParsed.expiry
+					? 'VERTICAL'
+					: closeParsed.strike === openParsed.strike
+						? 'CALENDAR'
+						: 'DIAGONAL'
+				: null
+
+		const proposable = reasons.length === 0 && pricing !== null
+		return {
+			underlying: d.underlying,
+			excluded: d.excluded,
+			rollType,
+			contracts,
+			close: close
+				? {
+						symbol: close.symbol,
+						description: close.description,
+						instruction: 'BUY_TO_CLOSE',
+						quantity: closeQty,
+						daysToExpiry: closeDte,
+						quote: closeQuote?.ok ? closeQuote : null,
+					}
+				: null,
+			open: open
+				? {
+						symbol: open.symbol,
+						description: open.description,
+						instruction: 'SELL_TO_OPEN',
+						quantity: openQty,
+						daysToExpiry: openDte,
+						quote: openQuote?.ok ? openQuote : null,
+					}
+				: null,
+			pricing,
+			coverage: {
+				shares,
+				shortCallsNow,
+				shortCallsAfter,
+				requiredShares,
+				covered,
+			},
+			proposable,
+			reasons,
+			// Ready to drop into a proposal's `orders` array as-is.
+			order:
+				proposable && pricing
+					? {
+							session: 'NORMAL',
+							duration: 'DAY',
+							orderType: pricing.orderType,
+							price: pricing.netPrice,
+							// Required, and it must name the real strategy. With NONE,
+							// Schwab treats the order as a simple one, reads `price` as a
+							// plain limit price, and rejects it: "Limit price must be
+							// populated only for limit orders." VERTICAL + NET_DEBIT
+							// previews 200 (verified 2026-08-18).
+							complexOrderStrategyType: rollType,
+							orderStrategyType: 'SINGLE',
+							orderLegCollection: [
+								{
+									instruction: 'BUY_TO_CLOSE',
+									quantity: contracts,
+									instrument: { symbol: close.symbol, assetType: 'OPTION' },
+								},
+								{
+									instruction: 'SELL_TO_OPEN',
+									quantity: contracts,
+									instrument: { symbol: open.symbol, assetType: 'OPTION' },
+								},
+							],
+						}
+					: null,
+		}
+	})
+}
+
 function coverage(indexed) {
 	const shortCalls = new Map()
 	for (const [symbol, position] of indexed.options) {
@@ -299,7 +583,8 @@ function signedMoney(value) {
 }
 
 function report(result) {
-	const { snapshot, balances, gaps, options, coverageRows, cleanup } = result
+	const { snapshot, balances, gaps, options, optionGaps, coverageRows, cleanup } =
+		result
 	const lines = []
 	const push = (line = '') => lines.push(line)
 
@@ -365,7 +650,7 @@ function report(result) {
 	}
 	push()
 
-	push(`OPTION DIVERGENCES — ${options.length || 'none'} (always report-only)`)
+	push(`OPTION DIVERGENCES — ${options.length || 'none'}`)
 	for (const d of options) {
 		push(`  ${d.underlying}${d.excluded ? ' [POLICY-EXCLUDED]' : ''}:`)
 		for (const c of d.contracts) {
@@ -374,6 +659,39 @@ function report(result) {
 					`${BENCHMARK.label} net short ${c.target}`,
 			)
 		}
+	}
+	push()
+
+	const rollable = optionGaps.filter((p) => p.proposable)
+	push(`OPTION ROLLS — ${rollable.length} of ${optionGaps.length} proposable`)
+	if (snapshot.optionQuotes && snapshot.optionQuotes.ok === false) {
+		push(`  NOTE: ${snapshot.optionQuotes.error} — no roll can be priced.`)
+	}
+	for (const p of optionGaps) {
+		const shape =
+			p.close && p.open
+				? `${p.rollType ?? 'roll'} ${p.contracts ?? '?'}× — close ${p.close.description} ` +
+					`(${p.close.daysToExpiry}d), open ${p.open.description} (${p.open.daysToExpiry}d)`
+				: 'no clean close/open pair'
+		push(`  ${p.underlying}: ${shape}`)
+		if (p.pricing) {
+			push(
+				`    crossed net ${money(p.pricing.netPrice)} ${p.pricing.direction} ` +
+					`(${p.pricing.orderType}) = ${money(p.pricing.notional)} · ` +
+					`mid would be ${money(Math.abs(p.pricing.netAtMid))} — crossing gives up ` +
+					`${money(Math.abs(p.pricing.givesUp))}`,
+			)
+		}
+		push(
+			`    coverage after: ${p.coverage.shortCallsAfter} short call(s) need ` +
+				`${p.coverage.requiredShares} sh, holds ${p.coverage.shares}` +
+				`${p.coverage.covered ? '' : ' — UNCOVERED'}`,
+		)
+		push(
+			p.proposable
+				? '    → PROPOSABLE (net-priced 2-leg roll)'
+				: `    → report-only: ${p.reasons.join('; ')}`,
+		)
 	}
 	push()
 
@@ -402,7 +720,7 @@ function report(result) {
 
 	const proposable = gaps.filter((g) => g.proposable)
 	push(
-		`PROPOSABLE AFTER THE OPEN: ${
+		`PROPOSABLE EQUITY (scheduled task): ${
 			proposable.length
 				? proposable
 						.map((g) => `${g.symbol} ${g.action} ${Math.abs(g.delta)}`)
@@ -410,6 +728,24 @@ function report(result) {
 				: 'nothing — no equity gap clears the $1,000 threshold'
 		}`,
 	)
+	push(
+		`PROPOSABLE OPTION ROLLS (manual, via cli/schwab-propose.mjs): ${
+			rollable.length
+				? rollable
+						.map(
+							(p) =>
+								`${p.underlying} ${p.contracts}× ${p.pricing.direction} ${money(p.pricing.netPrice)}`,
+						)
+						.join(', ')
+				: 'none'
+		}`,
+	)
+	if (rollable.length) {
+		push(
+			'  Order bodies are in `--json` under optionGaps[].order. The 10:00am ' +
+				'propose task does not submit these; copy them into a proposal file.',
+		)
+	}
 	return lines.join('\n')
 }
 
@@ -419,11 +755,13 @@ async function main() {
 	const benchmark = indexAccount(pickAccount(snapshot, BENCHMARK))
 
 	const gaps = quantityGaps(snapshot, portfolio, benchmark)
+	const options = optionDivergences(portfolio, benchmark)
 	const result = {
 		snapshot,
 		balances: [reconcile(portfolio.account), reconcile(benchmark.account)],
 		gaps,
-		options: optionDivergences(portfolio, benchmark),
+		options,
+		optionGaps: optionRollPlans(snapshot, portfolio, options),
 		coverageRows: coverage(portfolio),
 		benchmarkCoverage: coverage(benchmark),
 		cleanup: [...portfolio.equity.values()]
