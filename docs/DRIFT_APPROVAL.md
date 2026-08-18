@@ -6,8 +6,9 @@ deterministic worker code — **no LLM is involved in placing trades**.
 
 ```
 Cowork task ──POST /proposals (Bearer ORDER_API_KEY)──▶ Worker
-   validate → guardrails → Schwab preview each order → store in ProposalStore DO
+   validate → guardrails → Schwab preview each order
    → Slack message (delta + orders + Approve/Reject buttons)
+   → store in ProposalStore DO (one write, already carrying the message ts)
 You click Approve ──Slack──▶ POST /slack/interactions
    verify Slack signature → approver allowlist → atomic claim
    → execute each order via the same guarded path as POST /orders
@@ -234,6 +235,25 @@ Execution details:
 - Source of truth is the ProposalStore record plus KV audit entries
   (`audit:proposal:<ISO>:<id8>` and the usual `audit:order:…` per placement,
   90-day retention). A failed Slack update never re-triggers placement.
+
+### Why the Slack post happens before the store write
+
+The message goes up first, then the record is written once, already carrying
+the message's `channel`/`ts`. This is ordering for crash-safety, not style.
+
+Storing first left two ways to orphan a proposal whenever the isolate died in
+between — and a `wrangler dev` reload mid-request is enough to do it:
+
+- a `pending` record with no message, which nothing can approve and nothing
+  clears (it lingers until a later proposal supersedes it), or
+- a live message whose record never received its Slack coordinates, so
+  approving it places the orders while the message still shows its buttons.
+
+Posting first removes both: until the message exists there is nothing to roll
+back, and the record is written exactly once. The one remaining window —
+message posted, store write failed — fails closed. The buttons carry an id the
+store does not have, `claim` answers `not_found`, nothing is placed, and the
+handler withdraws the message to say so.
 
 ## Helper endpoints for the drift scheduled task
 

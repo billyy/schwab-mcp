@@ -274,7 +274,20 @@ export async function handleProposalsRequest(
 		})
 	}
 
-	// --- Store (supersedes any prior pending proposal) and post to Slack ---
+	// --- Post to Slack, then store in one write ---
+	//
+	// Order matters. Storing first and posting second leaves two ways to
+	// orphan a record if the isolate dies in between (a dev-server reload is
+	// enough): a `pending` proposal with no message, which nothing can ever
+	// approve or clear, or — worse — a live message whose record never got its
+	// Slack coordinates, so approving it places the orders while the message
+	// still shows its buttons.
+	//
+	// Posting first removes both. Until the message exists there is nothing to
+	// roll back, and the record is written exactly once, already carrying the
+	// coordinates. The remaining failure window (message posted, store write
+	// died) fails closed: the buttons reference an id the store does not have,
+	// and `claim` answers `not_found` without placing anything.
 	const now = new Date()
 	const proposal: ProposalRecord = {
 		id: crypto.randomUUID(),
@@ -285,8 +298,49 @@ export async function handleProposalsRequest(
 		createdAt: now.toISOString(),
 		expiresAt: new Date(now.getTime() + PROPOSAL_EXPIRY_SECONDS * 1000).toISOString(),
 	}
+
+	const posted = await slackApi(config.SLACK_BOT_TOKEN!, 'chat.postMessage', {
+		channel: config.SLACK_CHANNEL_ID!,
+		text: `Drift rebalance proposal: ${summary}`,
+		blocks: buildProposalBlocks(proposal),
+	})
+	if (!posted.ok || !posted.ts || !posted.channel) {
+		return jsonResponse(502, {
+			error: `Slack post failed (${posted.error ?? 'unknown'}); nothing was stored.`,
+		})
+	}
+	proposal.slack = { channel: posted.channel, ts: posted.ts }
+
 	const store = proposalStore(env.PROPOSAL_STORE!)
-	const created = await store.create(proposal)
+	let created: { superseded: { id: string; slack?: ProposalRecord['slack'] }[] }
+	try {
+		created = await store.create(proposal)
+	} catch (error) {
+		// The message is already up. Neutralize it rather than leaving live
+		// buttons behind a record that does not exist.
+		const message = error instanceof Error ? error.message : String(error)
+		proposalsLogger.error('Proposal store write failed after Slack post', {
+			proposalId: proposal.id,
+			error: message,
+		})
+		await slackApi(config.SLACK_BOT_TOKEN!, 'chat.update', {
+			channel: posted.channel,
+			ts: posted.ts,
+			text: 'Proposal could not be stored — ignore this message.',
+			blocks: [
+				{
+					type: 'section',
+					text: {
+						type: 'mrkdwn',
+						text: '⚠️ _Proposal could not be stored — ignore this message. Nothing was placed._',
+					},
+				},
+			],
+		})
+		return jsonResponse(502, {
+			error: `Proposal store write failed (${message}); the Slack message was withdrawn and nothing was stored.`,
+		})
+	}
 
 	for (const old of created.superseded) {
 		if (old.slack) {
@@ -306,21 +360,6 @@ export async function handleProposalsRequest(
 			})
 		}
 	}
-
-	const posted = await slackApi(config.SLACK_BOT_TOKEN!, 'chat.postMessage', {
-		channel: config.SLACK_CHANNEL_ID!,
-		text: `Drift rebalance proposal: ${summary}`,
-		blocks: buildProposalBlocks(proposal),
-	})
-	if (!posted.ok || !posted.ts || !posted.channel) {
-		await store.delete(proposal.id)
-		return jsonResponse(502, {
-			error: `Slack post failed (${posted.error ?? 'unknown'}); proposal discarded.`,
-		})
-	}
-	await store.update(proposal.id, {
-		slack: { channel: posted.channel, ts: posted.ts },
-	})
 
 	proposalsLogger.info('Proposal created', {
 		proposalId: proposal.id,
