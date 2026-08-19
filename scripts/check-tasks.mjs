@@ -16,7 +16,14 @@
  * never installed them (CI, a fresh clone) is not a failure — there is nothing
  * to be stale.
  */
-import { readFileSync, existsSync, readdirSync, realpathSync } from 'node:fs'
+import {
+	readFileSync,
+	existsSync,
+	readdirSync,
+	realpathSync,
+	lstatSync,
+	readlinkSync,
+} from 'node:fs'
 import { homedir } from 'node:os'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -26,7 +33,10 @@ const REPO_TASKS = resolve(
 	'..',
 	'tasks',
 )
-const INSTALL_ROOT = join(homedir(), '.claude', 'scheduled-tasks')
+// Overridable so the check can be exercised against a fixture.
+const INSTALL_ROOT =
+	process.env.SCHEDULED_TASKS_ROOT ??
+	join(homedir(), '.claude', 'scheduled-tasks')
 
 const repoTasks = readdirSync(REPO_TASKS)
 	.filter((f) => f.endsWith('.md'))
@@ -45,12 +55,30 @@ if (!existsSync(INSTALL_ROOT)) {
 }
 
 const problems = []
+const dangling = []
 let linked = 0
 let copied = 0
 let absent = 0
 
 for (const task of repoTasks) {
 	const installed = join(INSTALL_ROOT, task.name, 'SKILL.md')
+	// A dangling symlink is the dangerous case, not the harmless one: the job
+	// is installed and scheduled, but its definition resolves to nothing, so
+	// it fails at run time with no warning here. This happens for real when
+	// the repo is on a branch that predates tasks/ — the link points into the
+	// working tree, and checking out such a branch empties it. existsSync()
+	// follows symlinks and reports false, which is indistinguishable from
+	// "never installed" unless we look at the link itself.
+	const link = lstatSync(installed, { throwIfNoEntry: false })
+	if (link?.isSymbolicLink() && !existsSync(installed)) {
+		dangling.push({
+			name: task.name,
+			installed,
+			target: readlinkSync(installed),
+			expected: task.path,
+		})
+		continue
+	}
 	if (!existsSync(installed)) {
 		absent++
 		continue
@@ -64,6 +92,26 @@ for (const task of repoTasks) {
 	if (readFileSync(installed, 'utf8') !== readFileSync(task.path, 'utf8')) {
 		problems.push({ name: task.name, repo: task.path, installed })
 	}
+}
+
+if (dangling.length) {
+	console.error(
+		`✖ ${dangling.length} scheduled task(s) are installed but their definition is MISSING:\n`,
+	)
+	for (const d of dangling) {
+		console.error(`  ${d.name}`)
+		console.error(`    link:   ${d.installed}`)
+		console.error(`    points at: ${d.target}  <-- does not exist`)
+		if (d.target !== d.expected) {
+			console.error(`    expected:  ${d.expected}`)
+		}
+	}
+	console.error(
+		'\nThese jobs are scheduled and WILL FAIL at run time. Usually the repo is\n' +
+			'checked out on a branch where tasks/ does not exist yet — switch back to a\n' +
+			'branch that has it (or merge the branch that adds it).',
+	)
+	process.exit(1)
 }
 
 if (problems.length) {
