@@ -15,8 +15,10 @@
     "format": "prettier . --write",
     "lint": "eslint .",
     "typecheck": "tsc",
-    "validate": "npm run typecheck && npm run lint",
-    "postinstall": "patch-package"
+    "validate": "npm run typecheck && npm run lint && npm run tasks:check",
+    "postinstall": "patch-package",
+    "tasks:check": "node scripts/check-tasks.mjs",
+    "tasks:install": "node scripts/install-tasks.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250601.0",
