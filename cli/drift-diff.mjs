@@ -31,9 +31,6 @@ const WORKER_URL = process.env.WORKER_URL ?? 'http://localhost:8788'
 const PORTFOLIO = { number: '13102970', label: 'Partnership' }
 const BENCHMARK = { number: '80745838', label: 'CRT' }
 
-/** Held elsewhere (Fidelity) — divergences are surfaced, never actioned. */
-const POLICY_EXCLUDED = new Set(['BSX'])
-
 /** Equity gaps below this notional are noise, not rebalance candidates. */
 const PROPOSAL_THRESHOLD = 1000
 
@@ -230,11 +227,7 @@ function quantityGaps(snapshot, portfolio, benchmark) {
 			quoteStatus: quote.status ?? null,
 			limitPrice:
 				limitPrice == null ? null : Math.round(limitPrice * 100) / 100,
-			excluded: POLICY_EXCLUDED.has(symbol),
-			proposable:
-				!POLICY_EXCLUDED.has(symbol) &&
-				notional != null &&
-				notional >= PROPOSAL_THRESHOLD,
+			proposable: notional != null && notional >= PROPOSAL_THRESHOLD,
 		})
 	}
 	return gaps
@@ -274,7 +267,6 @@ function optionDivergences(portfolio, benchmark) {
 		if (!differing.length) continue
 		divergences.push({
 			underlying,
-			excluded: POLICY_EXCLUDED.has(underlying),
 			contracts: differing.sort().map((symbol) => ({
 				symbol,
 				description: describeOption(symbol),
@@ -311,7 +303,10 @@ function optionLegQuote(snapshot, symbol) {
 		}
 	}
 	if (q.bid == null || q.ask == null) {
-		return { ok: false, reason: `${label} has no two-sided quote (bid/ask missing)` }
+		return {
+			ok: false,
+			reason: `${label} has no two-sided quote (bid/ask missing)`,
+		}
 	}
 	if (q.ask < q.bid) {
 		return {
@@ -359,7 +354,6 @@ function optionRollPlans(snapshot, portfolio, divergences) {
 	const optionQuotesUsable = snapshot.optionQuotes?.ok !== false
 	return divergences.map((d) => {
 		const reasons = []
-		if (d.excluded) reasons.push('policy-excluded underlying (held elsewhere)')
 		if (!optionQuotesUsable) {
 			reasons.push(
 				`option quotes unavailable in this snapshot (${snapshot.optionQuotes?.error ?? 'unknown'})`,
@@ -374,7 +368,9 @@ function optionRollPlans(snapshot, portfolio, divergences) {
 			)
 		}
 		if (d.contracts.some((c) => c.held < 0 || c.target < 0)) {
-			reasons.push('involves long option inventory, not a plain short-call roll')
+			reasons.push(
+				'involves long option inventory, not a plain short-call roll',
+			)
 		}
 
 		const close = closes[0]
@@ -423,10 +419,16 @@ function optionRollPlans(snapshot, portfolio, divergences) {
 
 		// Expiry sanity: a contract past its date is untradeable, and the fact
 		// it is still open means the position itself needs attention.
-		const closeDte = closeParsed ? daysUntil(snapshot.asOf, closeParsed.expiry) : null
-		const openDte = openParsed ? daysUntil(snapshot.asOf, openParsed.expiry) : null
+		const closeDte = closeParsed
+			? daysUntil(snapshot.asOf, closeParsed.expiry)
+			: null
+		const openDte = openParsed
+			? daysUntil(snapshot.asOf, openParsed.expiry)
+			: null
 		if (closeDte !== null && closeDte < 0) {
-			reasons.push(`closing leg expired ${-closeDte} day(s) ago — manual review`)
+			reasons.push(
+				`closing leg expired ${-closeDte} day(s) ago — manual review`,
+			)
 		}
 		if (openDte !== null && openDte < 0) {
 			reasons.push('opening leg expiry is in the past — the snapshot is stale')
@@ -476,7 +478,6 @@ function optionRollPlans(snapshot, portfolio, divergences) {
 		const proposable = reasons.length === 0 && pricing !== null
 		return {
 			underlying: d.underlying,
-			excluded: d.excluded,
 			rollType,
 			contracts,
 			close: close
@@ -583,8 +584,15 @@ function signedMoney(value) {
 }
 
 function report(result) {
-	const { snapshot, balances, gaps, options, optionGaps, coverageRows, cleanup } =
-		result
+	const {
+		snapshot,
+		balances,
+		gaps,
+		options,
+		optionGaps,
+		coverageRows,
+		cleanup,
+	} = result
 	const lines = []
 	const push = (line = '') => lines.push(line)
 
@@ -637,11 +645,9 @@ function report(result) {
 
 	push(`QUANTITY GAPS (equity) — ${gaps.length || 'none'}`)
 	for (const g of gaps) {
-		const tag = g.excluded
-			? ' [POLICY-EXCLUDED, report-only]'
-			: g.proposable
-				? ' [≥ threshold → proposable]'
-				: ' [below $1,000 threshold]'
+		const tag = g.proposable
+			? ' [≥ threshold → proposable]'
+			: ' [below $1,000 threshold]'
 		push(
 			`  ${g.symbol}: holds ${g.held}, benchmark ${g.target} → ` +
 				`${g.action} ${Math.abs(g.delta)} @ ${money(g.price)} (${g.priceBasis}) ` +
@@ -652,7 +658,7 @@ function report(result) {
 
 	push(`OPTION DIVERGENCES — ${options.length || 'none'}`)
 	for (const d of options) {
-		push(`  ${d.underlying}${d.excluded ? ' [POLICY-EXCLUDED]' : ''}:`)
+		push(`  ${d.underlying}:`)
 		for (const c of d.contracts) {
 			push(
 				`    ${c.description}: ${PORTFOLIO.label} net short ${c.held}, ` +

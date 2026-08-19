@@ -176,7 +176,6 @@ named in `reasons[]`:
 | Leg quote not `Normal`, one-sided, or crossed | A frozen quote is not a limit basis. |
 | Spread wider than 25% of mid (above a $0.10 floor) | Crossing a thin option spread is where a "conservative" limit becomes a bad fill. |
 | Expiry already past | The contract is untradeable and the position needs manual review. |
-| Policy-excluded underlying (`BSX`) | Held elsewhere; surfaced, never actioned. |
 
 Unlike equity gaps, option rolls have **no notional floor**. The $1,000 equity
 threshold filters rounding noise; an option divergence is a whole position, so

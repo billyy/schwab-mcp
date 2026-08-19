@@ -251,10 +251,30 @@ are structural, not stylistic:
    fails closed, never nets long calls against short ones, and also refuses an
    equity `SELL` that would strand a short call.
 
+### The scheduled tasks live in `tasks/`, not just on the Mac
+
+`tasks/*.md` are the source of truth for the two Cowork jobs; the copies at
+`~/.claude/scheduled-tasks/<name>/SKILL.md` are only an install of them. That
+directory is outside git, so a PR changing what `drift-diff` emits cannot touch
+it and nothing fails when it falls behind — PR #18 added option support across
+the CLI, `/orders`, `/proposals` and the executor while the 10:00am task still
+said "never build option orders", and it silently skipped a live NFLX roll the
+next morning.
+
+`npm run validate` now runs `tasks:check`, which fails when an installed task
+has drifted from its repo copy (and no-ops on a machine that never installed
+them, so CI is unaffected). `npm run tasks:install` symlinks them, after which
+drift is impossible. **When you change what the CLI emits or what a guardrail
+does, edit `tasks/*.md` in the same commit.**
+
 `cli/drift-diff.mjs --json` emits `optionGaps[]` — priced roll plans with a
 ready-to-submit `order`, or `reasons[]` explaining why a divergence is
-report-only. The 10:00am propose task submits **equity only**; option rolls are
-submitted by hand via `cli/schwab-propose.mjs`. Docs: `docs/DRIFT_APPROVAL.md`
+report-only. The 10:00am propose task submits proposable rolls alongside equity,
+in the same batch, by copying each entry's `order` **verbatim** — a rebuilt body
+loses the `complexOrderStrategyType` the net price depends on. Option
+`proposable` is stricter than the equity flag: it already folds in coverage,
+roll shape, expiry, and the per-symbol halt check, so unlike equity it needs no
+guard of its own, and there is no notional floor. Docs: `docs/DRIFT_APPROVAL.md`
 
 ## Drift Approval (Slack)
 
