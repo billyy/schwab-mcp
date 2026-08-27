@@ -267,14 +267,26 @@ them, so CI is unaffected). `npm run tasks:install` symlinks them, after which
 drift is impossible. **When you change what the CLI emits or what a guardrail
 does, edit `tasks/*.md` in the same commit.**
 
-`cli/drift-diff.mjs --json` emits `optionGaps[]` — priced roll plans with a
+`cli/drift-diff.mjs --json` emits `optionGaps[]` — priced plans with a
 ready-to-submit `order`, or `reasons[]` explaining why a divergence is
-report-only. The 10:00am propose task submits proposable rolls alongside equity,
-in the same batch, by copying each entry's `order` **verbatim** — a rebuilt body
-loses the `complexOrderStrategyType` the net price depends on. Option
-`proposable` is stricter than the equity flag: it already folds in coverage,
-roll shape, expiry, and the per-symbol halt check, so unlike equity it needs no
-guard of its own, and there is no notional floor. Docs: `docs/DRIFT_APPROVAL.md`
+report-only. `planKind` says which of the two priceable shapes it is:
+
+- `"roll"` — the net-priced two-leg order above.
+- `"open"` — nothing to close, one call sold to open, as a single-leg `LIMIT`
+  at the bid **with no `complexOrderStrategyType`**. That field is the net-price
+  rule inverted: a two-leg net price requires it, and a one-leg order is
+  rejected for carrying it. This is the benchmark writing a call the account has
+  not written yet; what makes it a *covered* call rather than a naked one is
+  `checkOptionCoverage()`, nothing else.
+- `null` — report-only. A bare close is deliberately here, not proposable.
+
+The 10:00am propose task submits both proposable shapes alongside equity, in the
+same batch, by copying each entry's `order` **verbatim** — the two shapes have
+opposite requirements on `complexOrderStrategyType`, so a rebuilt body gets one
+of them wrong. Option `proposable` is stricter than the equity flag: for either
+shape it already folds in coverage, trade shape, expiry, and the per-symbol halt
+check, so unlike equity it needs no guard of its own, and there is no notional
+floor. Docs: `docs/DRIFT_APPROVAL.md`
 
 ## Drift Approval (Slack)
 

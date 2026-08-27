@@ -15,11 +15,13 @@
  * CRT is the benchmark and is immutable; every note is framed as a
  * Partnership action.
  *
- * Equity gaps come with a `limitPrice`; option divergences come with a priced
- * `optionGaps[].order` — a ready-to-submit net-priced two-leg roll — when the
- * divergence is a clean 1:1 covered-call roll with usable quotes. Emitting an
- * order body is not proposing it: submitting is `cli/schwab-propose.mjs`, and
- * the 10:00am scheduled task submits equity only.
+ * Equity gaps come with a `limitPrice`; option divergences come with a priced,
+ * ready-to-submit `optionGaps[].order` in either of two shapes — a net-priced
+ * two-leg covered-call roll, or a single-leg covered call sold to open when the
+ * benchmark holds a short call this account has not written. `planKind` says
+ * which. Emitting an order body is not proposing it: submitting is
+ * `cli/schwab-propose.mjs`, and the 10:00am scheduled task copies these
+ * verbatim into its proposal alongside equity.
  *
  * Config (env var wins, falls back to macOS Keychain):
  *   WORKER_URL       default: http://localhost:8788
@@ -340,12 +342,23 @@ function optionLegQuote(snapshot, symbol) {
 }
 
 /**
- * Turn each option divergence into a concrete roll plan, or say why it is not
- * one. Only the shape this pipeline has been designed for is proposable: a
- * covered short call closing at one strike/expiry and reopening at another,
- * 1:1, as a single net-priced two-leg order. Everything else — ratio changes,
- * puts, long-option inventory, multi-contract reshuffles — is reported with a
- * reason and left for a human, because a wrong pairing here is a naked short.
+ * Turn each option divergence into a concrete plan, or say why it is not one.
+ * Two shapes are proposable, both of which end in a covered short call:
+ *
+ *   'roll' — a covered short call closing at one strike/expiry and reopening at
+ *     another, 1:1, as a single net-priced two-leg order.
+ *   'open' — nothing to close, one call to sell to open, as a single-leg LIMIT
+ *     at the bid. This is the benchmark writing a call this account has not
+ *     written yet.
+ *
+ * Everything else — ratio changes, puts, long-option inventory, multi-contract
+ * reshuffles, and a bare close — is reported with a reason and left for a
+ * human, because a wrong pairing here is a naked short.
+ *
+ * Both shapes are gated identically on what actually bounds the risk: post-trade
+ * share coverage (only shares cover; long calls never do), expiry sanity, and
+ * quote health. Neither is gated on notional — an option divergence is a whole
+ * position, not rounding noise.
  *
  * Emitting the order body is not proposing it: nothing is submitted or
  * previewed from this script.
@@ -362,9 +375,25 @@ function optionRollPlans(snapshot, portfolio, divergences) {
 
 		const closes = d.contracts.filter((c) => c.held > c.target)
 		const opens = d.contracts.filter((c) => c.target > c.held)
-		if (closes.length !== 1 || opens.length !== 1) {
+		// Two shapes are priceable here. A ROLL closes one contract and opens
+		// one. An OPEN closes nothing and opens one — the benchmark has written
+		// a call this account has not written yet.
+		//
+		// The open-only case is not a degenerate roll, it is a smaller one: with
+		// no closing leg there is no two-order half-fill to invert, and its
+		// entire risk is the short call itself, which the coverage check below
+		// bounds exactly as it does for a roll. A pure CLOSE (held > target,
+		// nothing to open) stays report-only — it is risk-reducing but spends
+		// cash, and nobody has asked this path to decide that unattended.
+		const planKind =
+			closes.length === 1 && opens.length === 1
+				? 'roll'
+				: closes.length === 0 && opens.length === 1
+					? 'open'
+					: null
+		if (!planKind) {
 			reasons.push(
-				`not a 1:1 roll — ${closes.length} contract(s) to close, ${opens.length} to open; needs a human`,
+				`not a 1:1 roll or a single opening sale — ${closes.length} contract(s) to close, ${opens.length} to open; needs a human`,
 			)
 		}
 		if (d.contracts.some((c) => c.held < 0 || c.target < 0)) {
@@ -377,7 +406,15 @@ function optionRollPlans(snapshot, portfolio, divergences) {
 		const open = opens[0]
 		const closeParsed = close ? parseOption(close.symbol) : null
 		const openParsed = open ? parseOption(open.symbol) : null
-		if (closeParsed && openParsed) {
+		if (planKind === 'open') {
+			if (!openParsed) {
+				reasons.push('could not parse the contract symbol')
+			} else if (openParsed.right !== 'C') {
+				reasons.push(
+					'not a covered call — shares cannot cover a short put, so this path does not price it',
+				)
+			}
+		} else if (closeParsed && openParsed) {
 			if (closeParsed.right !== 'C' || openParsed.right !== 'C') {
 				reasons.push(
 					'not a call roll — shares cannot cover a put, so this path does not price it',
@@ -394,7 +431,8 @@ function optionRollPlans(snapshot, portfolio, divergences) {
 				`unbalanced: closing ${closeQty} contract(s) but opening ${openQty}`,
 			)
 		}
-		const contracts = closeQty === openQty ? closeQty : null
+		const contracts =
+			planKind === 'open' ? openQty : closeQty === openQty ? closeQty : null
 
 		// Coverage after the roll, computed the same conservative way the worker
 		// does it: only shares cover, long calls never do.
@@ -439,7 +477,34 @@ function optionRollPlans(snapshot, portfolio, divergences) {
 		let closeQuote = null
 		let openQuote = null
 		let pricing = null
-		if (reasons.length === 0 && close && open && contracts) {
+		if (reasons.length === 0 && planKind === 'open' && open && contracts) {
+			openQuote = optionLegQuote(snapshot, open.symbol)
+			if (!openQuote.ok) {
+				reasons.push(openQuote.reason)
+			} else if (!(openQuote.bid > 0)) {
+				// optionLegQuote only requires a two-sided quote; a bid of exactly
+				// zero passes it. That is harmless inside a roll's net price, but
+				// as a standalone limit it would offer to write the call for
+				// nothing.
+				reasons.push(
+					`${describeOption(open.symbol)} has no bid to sell into (bid ${money(openQuote.bid)})`,
+				)
+			} else {
+				// Selling crosses to the bid — the same direction, and the same
+				// give-up against the mid, as a roll's opening leg.
+				const price = Math.round(openQuote.bid * 100) / 100
+				pricing = {
+					// Single leg: a plain LIMIT, never a NET_* type.
+					orderType: 'LIMIT',
+					direction: 'credit',
+					netPrice: price,
+					netCrossed: price,
+					netAtMid: openQuote.mid,
+					givesUp: Math.round((openQuote.mid - price) * 100) / 100,
+					notional: price * contracts * 100,
+				}
+			}
+		} else if (reasons.length === 0 && close && open && contracts) {
 			closeQuote = optionLegQuote(snapshot, close.symbol)
 			openQuote = optionLegQuote(snapshot, open.symbol)
 			if (!closeQuote.ok) reasons.push(closeQuote.reason)
@@ -478,6 +543,7 @@ function optionRollPlans(snapshot, portfolio, divergences) {
 		const proposable = reasons.length === 0 && pricing !== null
 		return {
 			underlying: d.underlying,
+			planKind,
 			rollType,
 			contracts,
 			close: close
@@ -512,25 +578,19 @@ function optionRollPlans(snapshot, portfolio, divergences) {
 			reasons,
 			// Ready to drop into a proposal's `orders` array as-is.
 			order:
-				proposable && pricing
+				proposable && pricing && planKind === 'open'
 					? {
 							session: 'NORMAL',
 							duration: 'DAY',
-							orderType: pricing.orderType,
+							// Plain LIMIT, and deliberately NO complexOrderStrategyType.
+							// That field is what makes Schwab read `price` as a net
+							// price; on a single leg it is the net-price rule inverted —
+							// naming a strategy on a one-leg order is what gets it
+							// rejected, not omitting one.
+							orderType: 'LIMIT',
 							price: pricing.netPrice,
-							// Required, and it must name the real strategy. With NONE,
-							// Schwab treats the order as a simple one, reads `price` as a
-							// plain limit price, and rejects it: "Limit price must be
-							// populated only for limit orders." VERTICAL + NET_DEBIT
-							// previews 200 (verified 2026-08-18).
-							complexOrderStrategyType: rollType,
 							orderStrategyType: 'SINGLE',
 							orderLegCollection: [
-								{
-									instruction: 'BUY_TO_CLOSE',
-									quantity: contracts,
-									instrument: { symbol: close.symbol, assetType: 'OPTION' },
-								},
 								{
 									instruction: 'SELL_TO_OPEN',
 									quantity: contracts,
@@ -538,7 +598,33 @@ function optionRollPlans(snapshot, portfolio, divergences) {
 								},
 							],
 						}
-					: null,
+					: proposable && pricing
+						? {
+								session: 'NORMAL',
+								duration: 'DAY',
+								orderType: pricing.orderType,
+								price: pricing.netPrice,
+								// Required, and it must name the real strategy. With NONE,
+								// Schwab treats the order as a simple one, reads `price` as a
+								// plain limit price, and rejects it: "Limit price must be
+								// populated only for limit orders." VERTICAL + NET_DEBIT
+								// previews 200 (verified 2026-08-18).
+								complexOrderStrategyType: rollType,
+								orderStrategyType: 'SINGLE',
+								orderLegCollection: [
+									{
+										instruction: 'BUY_TO_CLOSE',
+										quantity: contracts,
+										instrument: { symbol: close.symbol, assetType: 'OPTION' },
+									},
+									{
+										instruction: 'SELL_TO_OPEN',
+										quantity: contracts,
+										instrument: { symbol: open.symbol, assetType: 'OPTION' },
+									},
+								],
+							}
+						: null,
 		}
 	})
 }
@@ -669,16 +755,21 @@ function report(result) {
 	push()
 
 	const rollable = optionGaps.filter((p) => p.proposable)
-	push(`OPTION ROLLS — ${rollable.length} of ${optionGaps.length} proposable`)
+	push(
+		`OPTION ROLLS & OPENS — ${rollable.length} of ${optionGaps.length} proposable`,
+	)
 	if (snapshot.optionQuotes && snapshot.optionQuotes.ok === false) {
-		push(`  NOTE: ${snapshot.optionQuotes.error} — no roll can be priced.`)
+		push(`  NOTE: ${snapshot.optionQuotes.error} — nothing can be priced.`)
 	}
 	for (const p of optionGaps) {
 		const shape =
-			p.close && p.open
-				? `${p.rollType ?? 'roll'} ${p.contracts ?? '?'}× — close ${p.close.description} ` +
-					`(${p.close.daysToExpiry}d), open ${p.open.description} (${p.open.daysToExpiry}d)`
-				: 'no clean close/open pair'
+			p.planKind === 'open'
+				? `open ${p.contracts ?? '?'}× — sell to open ${p.open.description} ` +
+					`(${p.open.daysToExpiry}d), nothing to close`
+				: p.close && p.open
+					? `${p.rollType ?? 'roll'} ${p.contracts ?? '?'}× — close ${p.close.description} ` +
+						`(${p.close.daysToExpiry}d), open ${p.open.description} (${p.open.daysToExpiry}d)`
+					: 'no clean close/open pair'
 		push(`  ${p.underlying}: ${shape}`)
 		if (p.pricing) {
 			push(
@@ -695,7 +786,9 @@ function report(result) {
 		)
 		push(
 			p.proposable
-				? '    → PROPOSABLE (net-priced 2-leg roll)'
+				? p.planKind === 'open'
+					? '    → PROPOSABLE (single-leg covered call, LIMIT at the bid)'
+					: '    → PROPOSABLE (net-priced 2-leg roll)'
 				: `    → report-only: ${p.reasons.join('; ')}`,
 		)
 	}
@@ -735,12 +828,13 @@ function report(result) {
 		}`,
 	)
 	push(
-		`PROPOSABLE OPTION ROLLS (manual, via cli/schwab-propose.mjs): ${
+		`PROPOSABLE OPTION TRADES (submitted by the 10:00am propose task): ${
 			rollable.length
 				? rollable
 						.map(
 							(p) =>
-								`${p.underlying} ${p.contracts}× ${p.pricing.direction} ${money(p.pricing.netPrice)}`,
+								`${p.underlying} ${p.contracts}× ${p.planKind === 'open' ? 'open' : 'roll'} ` +
+								`${p.pricing.direction} ${money(p.pricing.netPrice)}`,
 						)
 						.join(', ')
 				: 'none'
@@ -749,7 +843,7 @@ function report(result) {
 	if (rollable.length) {
 		push(
 			'  Order bodies are in `--json` under optionGaps[].order. The 10:00am ' +
-				'propose task does not submit these; copy them into a proposal file.',
+				'propose task submits these alongside equity, copied verbatim.',
 		)
 	}
 	return lines.join('\n')
