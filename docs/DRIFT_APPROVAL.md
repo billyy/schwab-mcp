@@ -51,7 +51,8 @@ Rules:
 - **LIMIT orders only.** Priceless (MARKET) orders are always rejected on this
   endpoint — a stale market order approved hours later is unbounded risk. A
   multi-leg option spread satisfies this with a net price (`NET_CREDIT`,
-  `NET_DEBIT`, `NET_ZERO`) — see [Option rolls](#option-rolls).
+  `NET_DEBIT`, `NET_ZERO`) — see [Option rolls](#option-rolls). A single-leg
+  covered call sold to open uses a plain `LIMIT` instead.
 - `accountNumber` (plain number or hashValue) can be set per order or once at
   the proposal level. It is re-resolved at execution, so hashValue rotation is
   harmless.
@@ -99,9 +100,11 @@ configured.
 
 ## Option rolls
 
-The four live option divergences are all covered-call **rolls**: close a
-near-dated short call, open a later or higher-strike one. A roll is submitted
-as **one net-priced two-leg order**, never as two single-leg orders:
+Most option divergences are covered-call **rolls**: close a near-dated short
+call, open a later or higher-strike one. (The other proposable shape is an
+opening covered-call sale — see [Where option plans come from](#where-option-plans-come-from).)
+A roll is submitted as **one net-priced two-leg order**, never as two
+single-leg orders:
 
 ```json
 {
@@ -152,32 +155,56 @@ long the lower strike, short the higher, hence a debit.
 Verified 2026-08-18 against Schwab's `previewOrder`: `VERTICAL` + `NET_DEBIT` +
 `price` returns 200; the same order with `NONE` returns 400.
 
-### Where roll plans come from
+### Where option plans come from
 
 `node cli/drift-diff.mjs --json` emits `optionGaps[]`, one entry per option
-divergence, each with `proposable`, `reasons[]`, and a ready-to-submit
-`order`. Copy a proposable entry's `order` into a proposal file's `orders`
-array and run `cli/schwab-propose.mjs`.
+divergence, each with `planKind`, `proposable`, `reasons[]`, and a
+ready-to-submit `order`. Copy a proposable entry's `order` into a proposal
+file's `orders` array and run `cli/schwab-propose.mjs`.
 
-Pricing crosses both legs — buy the closing leg at its **ask**, sell the
-opening leg at its **bid** — the same convention the equity path uses. The plan
-also reports `netAtMid` and `givesUp` so the approver can see what crossing
-costs versus the mids.
+Two shapes are priceable, and `planKind` names which:
+
+| `planKind` | Shape | Order |
+| --- | --- | --- |
+| `"roll"` | Close one short call, open another 1:1 | Two legs, `NET_*` price, **must** carry `complexOrderStrategyType` |
+| `"open"` | Nothing to close, one call sold to open | One leg, plain `LIMIT` at the bid, **must not** carry `complexOrderStrategyType` |
+| `null` | Anything else, including a bare close | None — report-only |
+
+The `complexOrderStrategyType` requirement is exactly inverted between the two,
+which is the whole reason the propose task copies `order` **verbatim** instead
+of rebuilding it: naming a strategy is what makes Schwab read `price` as a net
+price, so the two-leg order is rejected without it and the one-leg order is
+rejected with it.
+
+An `"open"` is not a weaker roll. With no closing leg there is no half-fill to
+invert, and its entire risk is the short call itself — which is bounded by the
+same coverage check that bounds a roll's. What makes it a *covered* call rather
+than a naked one is `checkOptionCoverage()`, and nothing else.
+
+A bare **close** (the account holds a short call the benchmark does not) is
+deliberately report-only. It is risk-reducing, but it spends cash, and nothing
+has asked this path to make that call unattended.
+
+Pricing crosses to the unfavorable side of the spread — buy a closing leg at
+its **ask**, sell an opening leg at its **bid** — the same convention the equity
+path uses. Each plan also reports `netAtMid` and `givesUp` so the approver can
+see what crossing costs versus the mids.
 
 A divergence is **report-only** (not proposable) when any of these hold, each
 named in `reasons[]`:
 
 | Reason | Why |
 | --- | --- |
-| Not a 1:1 close/open pair | A ratio change or multi-contract reshuffle is not a roll; a wrong pairing is a naked short. |
-| Not both calls | Shares cannot cover a put, so this path does not price one. |
-| Long option inventory involved | Only plain short-call rolls are modeled. |
+| Neither a 1:1 close/open pair nor a single opening sale | A ratio change, multi-contract reshuffle, or bare close; a wrong pairing is a naked short. |
+| Not a call | Shares cannot cover a put, so this path does not price one. |
+| Long option inventory involved | Only plain short-call rolls and opens are modeled. |
 | Coverage would break | Resulting short calls would exceed shares ÷ 100. |
 | Leg quote not `Normal`, one-sided, or crossed | A frozen quote is not a limit basis. |
 | Spread wider than 25% of mid (above a $0.10 floor) | Crossing a thin option spread is where a "conservative" limit becomes a bad fill. |
+| No bid on an opening sale | A $0 limit would offer to write the call for nothing. Only reachable for `"open"`; inside a roll the bid is subsumed in the net price. |
 | Expiry already past | The contract is untradeable and the position needs manual review. |
 
-Unlike equity gaps, option rolls have **no notional floor**. The $1,000 equity
+Unlike equity gaps, option trades have **no notional floor**. The $1,000 equity
 threshold filters rounding noise; an option divergence is a whole position, so
 a $200 net credit still moves a 100-share obligation and is judged on quote
 quality and coverage instead of size.
