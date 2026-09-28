@@ -12,6 +12,9 @@
  *   node cli/drift-diff.mjs            # human-readable report
  *   node cli/drift-diff.mjs --json     # machine-readable, same numbers
  *
+ * Side effect: records CRT's positions in .drift-state/crt-positions.json
+ * (git-ignored) to report what CRT traded since the prior day.
+ *
  * CRT is the benchmark and is immutable; every note is framed as a
  * Partnership action.
  *
@@ -28,6 +31,7 @@
  *   ORDER_API_KEY    or Keychain: security add-generic-password -s schwab-mcp-order -a api-key -w '<key>'
  */
 import { execFileSync } from 'node:child_process'
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 
 const WORKER_URL = process.env.WORKER_URL ?? 'http://localhost:8788'
 const PORTFOLIO = { number: '13102970', label: 'Partnership' }
@@ -69,6 +73,18 @@ const OPTION_SPREAD_ABS_FLOOR = 0.1
  * 2026-08-06 MA purchase, where it started at $21,087.51.) It is NOT margin.
  */
 const RECONCILE_TOLERANCE = 1
+
+/**
+ * Benchmark position history, one entry per ET calendar date, so the report
+ * can say what CRT itself traded — a gap alone cannot tell "CRT moved" from
+ * "Partnership moved". Keyed by date rather than by run so the 7am and 10am
+ * runs (and any ad-hoc rerun) all diff against the same prior-day baseline
+ * instead of the second run of the day seeing "no changes". Git-ignored: it
+ * holds position data.
+ */
+const HISTORY_DIR = new URL('../.drift-state/', import.meta.url)
+const HISTORY_FILE = new URL('crt-positions.json', HISTORY_DIR)
+const HISTORY_DAYS = 14
 
 function fail(message) {
 	console.error(`✖ ${message}`)
@@ -278,6 +294,92 @@ function optionDivergences(portfolio, benchmark) {
 		})
 	}
 	return divergences
+}
+
+/** Net quantity per symbol: long shares, and short-minus-long contracts. */
+function holdingsOf(indexed) {
+	const holdings = {}
+	for (const [symbol, p] of indexed.equity) holdings[symbol] = p.longQuantity
+	for (const [symbol, p] of indexed.options)
+		holdings[symbol] = -(p.shortQuantity - p.longQuantity)
+	return holdings
+}
+
+function etDate(iso) {
+	return new Intl.DateTimeFormat('en-CA', {
+		timeZone: 'America/New_York',
+	}).format(new Date(iso))
+}
+
+/**
+ * Diff the benchmark against its most recent snapshot from an EARLIER ET date,
+ * then record today's. History I/O never fails the run — the divergence report
+ * matters more than the change log, so a broken file degrades to `error`.
+ */
+function benchmarkChanges(snapshot, benchmark) {
+	const today = etDate(snapshot.asOf)
+	const current = holdingsOf(benchmark)
+	let history = {}
+	try {
+		history = JSON.parse(readFileSync(HISTORY_FILE, 'utf8'))
+	} catch (error) {
+		if (error.code !== 'ENOENT')
+			return {
+				since: null,
+				changes: [],
+				error: `history unreadable: ${error.message}`,
+			}
+	}
+
+	const since = Object.keys(history)
+		.filter((date) => date < today)
+		.sort()
+		.at(-1)
+	const changes = []
+	if (since) {
+		const before = history[since]
+		const symbols = new Set([...Object.keys(before), ...Object.keys(current)])
+		for (const symbol of [...symbols].sort()) {
+			const was = before[symbol] ?? 0
+			const now = current[symbol] ?? 0
+			if (was === now) continue
+			const option = parseOption(symbol)
+			changes.push({
+				symbol,
+				description: option ? describeOption(symbol) : symbol,
+				assetType: option ? 'OPTION' : 'EQUITY',
+				before: was,
+				after: now,
+				delta: now - was,
+				kind:
+					was === 0
+						? 'new'
+						: now === 0
+							? 'exit'
+							: Math.abs(now) > Math.abs(was)
+								? 'add'
+								: 'trim',
+			})
+		}
+	}
+
+	history[today] = current
+	const kept = Object.fromEntries(
+		Object.entries(history).sort().slice(-HISTORY_DAYS),
+	)
+	try {
+		mkdirSync(HISTORY_DIR, { recursive: true })
+		const tmp = new URL('crt-positions.json.tmp', HISTORY_DIR)
+		writeFileSync(tmp, JSON.stringify(kept, null, 2))
+		renameSync(tmp, HISTORY_FILE)
+	} catch (error) {
+		return {
+			since: since ?? null,
+			changes,
+			error: `history not saved: ${error.message}`,
+		}
+	}
+	return { since: since ?? null, changes, error: null }
 }
 
 /** Whole days from the snapshot date to an expiry date, both YYYY-MM-DD. */
@@ -678,6 +780,7 @@ function report(result) {
 		optionGaps,
 		coverageRows,
 		cleanup,
+		benchmarkChanges: crtChanges,
 	} = result
 	const lines = []
 	const push = (line = '') => lines.push(line)
@@ -725,6 +828,22 @@ function report(result) {
 				balances[0].staleLiquidationValue ? PORTFOLIO.label : BENCHMARK.label
 			}'s liquidationValue is start-of-day while the other is live. Intraday it ` +
 				`measures staleness as much as real divergence. Do not headline it mid-session.`,
+		)
+	}
+	push()
+
+	push(
+		`${BENCHMARK.label} CHANGES SINCE ${crtChanges.since ?? '(no baseline)'} — ${
+			crtChanges.since ? crtChanges.changes.length || 'none' : 'n/a'
+		}`,
+	)
+	if (crtChanges.error) push(`  (${crtChanges.error})`)
+	if (!crtChanges.since)
+		push('  No earlier snapshot recorded yet; today is saved as the baseline.')
+	for (const c of crtChanges.changes) {
+		const unit = c.assetType === 'OPTION' ? 'contracts (− = short)' : 'sh'
+		push(
+			`  ${c.description}: ${c.kind.toUpperCase()} ${c.before} → ${c.after} ${unit}`,
 		)
 	}
 	push()
@@ -867,6 +986,7 @@ async function main() {
 		cleanup: [...portfolio.equity.values()]
 			.filter((p) => !benchmark.equity.has(p.symbol))
 			.map((p) => ({ symbol: p.symbol, held: p.longQuantity })),
+		benchmarkChanges: benchmarkChanges(snapshot, benchmark),
 	}
 
 	if (process.argv.includes('--json')) {

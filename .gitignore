@@ -185,3 +185,6 @@ wrangler.deploy.jsonc
 
 # Generated launchd wrapper app (rebuild: see automation/README.md)
 automation/*.app
+
+# drift-diff CRT position history (holds position data)
+.drift-state/
