@@ -63,6 +63,21 @@ const OPTION_MAX_SPREAD_PCT = 0.25
 const OPTION_SPREAD_ABS_FLOOR = 0.1
 
 /**
+ * An opening sale is judged on what it actually gives up, not on the spread.
+ * It crosses ONE side — sell at the bid — so its cost versus the mid is half
+ * the spread, where a roll pays half on each of two legs. Gating it on the
+ * full spread blocked ordinary long-dated calls: the TJX Jan-2027 $155 call
+ * (bid $1.35 / ask $1.75, 26% wide) gave up $0.20 — 13% of mid, $20 on the
+ * contract — and was skipped, leaving Partnership unmatched to CRT until it was
+ * placed by hand (2026-10-02). The point of this path is to match the
+ * Mariner-managed benchmark, so the limit is a backstop against a genuinely
+ * hollow bid, not a fill-quality preference.
+ */
+const OPTION_OPEN_MAX_BID_DISCOUNT = 0.2
+/** Below this dollar give-up, the percentage of a cheap contract is meaningless. */
+const OPTION_OPEN_DISCOUNT_ABS_FLOOR = 0.05
+
+/**
  * Reconciliation tolerance: positions + cash vs reported liquidation value.
  *
  * When these disagree it is normally an incoming transfer that has not settled
@@ -394,7 +409,7 @@ function daysUntil(asOf, expiry) {
  * Validate one leg's quote for use as a limit basis. Returns the usable
  * numbers, or a reason the leg cannot be priced.
  */
-function optionLegQuote(snapshot, symbol) {
+function optionLegQuote(snapshot, symbol, { checkSpread = true } = {}) {
 	const label = describeOption(symbol)
 	const q = snapshot.quotes?.[symbol]
 	if (!q) {
@@ -421,6 +436,7 @@ function optionLegQuote(snapshot, symbol) {
 	const mid = (q.bid + q.ask) / 2
 	const spread = q.ask - q.bid
 	if (
+		checkSpread &&
 		spread > OPTION_SPREAD_ABS_FLOOR &&
 		mid > 0 &&
 		spread / mid > OPTION_MAX_SPREAD_PCT
@@ -580,7 +596,10 @@ function optionRollPlans(snapshot, portfolio, divergences) {
 		let openQuote = null
 		let pricing = null
 		if (reasons.length === 0 && planKind === 'open' && open && contracts) {
-			openQuote = optionLegQuote(snapshot, open.symbol)
+			// Full-spread width is a roll's test; an opening sale is held to
+			// its bid discount below instead (see OPTION_OPEN_MAX_BID_DISCOUNT).
+			openQuote = optionLegQuote(snapshot, open.symbol, { checkSpread: false })
+			const discount = openQuote.ok ? openQuote.mid - openQuote.bid : 0
 			if (!openQuote.ok) {
 				reasons.push(openQuote.reason)
 			} else if (!(openQuote.bid > 0)) {
@@ -590,6 +609,15 @@ function optionRollPlans(snapshot, portfolio, divergences) {
 				// nothing.
 				reasons.push(
 					`${describeOption(open.symbol)} has no bid to sell into (bid ${money(openQuote.bid)})`,
+				)
+			} else if (
+				discount > OPTION_OPEN_DISCOUNT_ABS_FLOOR &&
+				discount / openQuote.mid > OPTION_OPEN_MAX_BID_DISCOUNT
+			) {
+				reasons.push(
+					`${describeOption(open.symbol)} bid ${money(openQuote.bid)} is ` +
+						`${Math.round((discount / openQuote.mid) * 100)}% below its ` +
+						`${money(openQuote.mid)} mid — too hollow to sell into`,
 				)
 			} else {
 				// Selling crosses to the bid — the same direction, and the same

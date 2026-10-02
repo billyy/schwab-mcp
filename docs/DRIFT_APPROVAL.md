@@ -200,7 +200,8 @@ named in `reasons[]`:
 | Long option inventory involved | Only plain short-call rolls and opens are modeled. |
 | Coverage would break | Resulting short calls would exceed shares ÷ 100. |
 | Leg quote not `Normal`, one-sided, or crossed | A frozen quote is not a limit basis. |
-| Spread wider than 25% of mid (above a $0.10 floor) | Crossing a thin option spread is where a "conservative" limit becomes a bad fill. |
+| Roll: a leg's spread wider than 25% of mid (above a $0.10 floor) | Crossing a thin option spread is where a "conservative" limit becomes a bad fill. |
+| Opening sale: bid more than 20% below mid (above a $0.05 floor) | An open crosses one side only, so it is judged on what selling at the bid gives up — half the spread — not the full width. A backstop against a hollow bid; the goal is matching the benchmark, and a full-width test skipped ordinary long-dated calls (TJX, 2026-10-02). |
 | No bid on an opening sale | A $0 limit would offer to write the call for nothing. Only reachable for `"open"`; inside a roll the bid is subsumed in the net price. |
 | Expiry already past | The contract is untradeable and the position needs manual review. |
 
