@@ -1,18 +1,27 @@
 #!/usr/bin/env node
 /**
- * install-tasks — symlink `~/.claude/scheduled-tasks/<name>/SKILL.md` at the
- * repo's `tasks/<name>.md`, so the running job and the reviewed file are the
- * same bytes and cannot drift. Idempotent; --check reports without writing.
+ * install-tasks — copy the repo's `tasks/<name>.md` to
+ * `~/.claude/scheduled-tasks/<name>/SKILL.md`. Idempotent; --check reports
+ * without writing.
  *
- * A symlink rather than a copy on purpose: a copy needs re-running after every
- * edit, and forgetting is the exact failure this is here to prevent.
+ * A COPY, not a symlink. The first version symlinked the installed file at the
+ * repo copy so the two could never drift. Since 2026-09-03 the desktop app
+ * rejects a SKILL.md that resolves outside `~/.claude/scheduled-tasks`
+ * ("Invalid file path: path traversal detected"): the registration cannot be
+ * updated and, worse, the scheduled run no longer starts a session at all —
+ * the task shows a fresh `lastRunAt` and nothing happens. Both CRT tasks were
+ * dark 2026-09-29 → 10-01 after a reinstall re-created the links (PR #21).
+ *
+ * Drift is caught instead by `npm run tasks:check` (part of `npm run validate`),
+ * which compares bytes. Re-run this after every edit to `tasks/*.md`.
  */
 import {
 	existsSync,
 	readdirSync,
-	realpathSync,
+	readFileSync,
+	copyFileSync,
 	renameSync,
-	symlinkSync,
+	unlinkSync,
 	mkdirSync,
 	lstatSync,
 } from 'node:fs'
@@ -25,7 +34,10 @@ const REPO_TASKS = resolve(
 	'..',
 	'tasks',
 )
-const INSTALL_ROOT = join(homedir(), '.claude', 'scheduled-tasks')
+// Overridable so the install can be exercised against a fixture.
+const INSTALL_ROOT =
+	process.env.SCHEDULED_TASKS_ROOT ??
+	join(homedir(), '.claude', 'scheduled-tasks')
 const checkOnly = process.argv.includes('--check')
 
 const stamp = new Date().toISOString().replace(/[:.]/g, '-')
@@ -37,24 +49,44 @@ for (const file of readdirSync(REPO_TASKS).filter((f) => f.endsWith('.md'))) {
 	const dir = join(INSTALL_ROOT, name)
 	const target = join(dir, 'SKILL.md')
 
-	if (existsSync(target) && realpathSync(target) === realpathSync(source)) {
-		console.log(`• ${name}: already linked`)
+	const current = lstatSync(target, { throwIfNoEntry: false })
+	const isLink = current?.isSymbolicLink() ?? false
+	// trimEnd: the desktop app drops the trailing newline when it rewrites the
+	// installed file's frontmatter (description edits) — not a real difference.
+	const upToDate =
+		current &&
+		!isLink &&
+		readFileSync(target, 'utf8').trimEnd() ===
+			readFileSync(source, 'utf8').trimEnd()
+
+	if (upToDate) {
+		console.log(`• ${name}: already installed`)
 		continue
 	}
 	if (checkOnly) {
-		console.log(`! ${name}: NOT linked (would install)`)
+		console.log(
+			isLink
+				? `! ${name}: installed as a SYMLINK — the scheduler rejects it (would replace with a copy)`
+				: current
+					? `! ${name}: installed copy differs from tasks/${file} (would reinstall)`
+					: `! ${name}: NOT installed (would install)`,
+		)
 		changed++
 		continue
 	}
 	if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-	if (existsSync(target) || lstatSync(target, { throwIfNoEntry: false })) {
+	if (isLink) {
+		// A link holds no content of its own — nothing to preserve.
+		unlinkSync(target)
+		console.log(`  removed symlink (the scheduler rejects a linked SKILL.md)`)
+	} else if (current) {
 		// Never delete the previous definition — move it aside, dated.
 		const backup = `${target}.replaced-${stamp}.bak`
 		renameSync(target, backup)
 		console.log(`  previous copy kept at ${backup}`)
 	}
-	symlinkSync(source, target)
-	console.log(`✔ ${name}: linked → ${source}`)
+	copyFileSync(source, target)
+	console.log(`✔ ${name}: copied ← ${source}`)
 	changed++
 }
 

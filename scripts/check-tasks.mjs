@@ -15,12 +15,19 @@
  * repo copy. Runs on the machine that owns the tasks; a checkout that has
  * never installed them (CI, a fresh clone) is not a failure — there is nothing
  * to be stale.
+ *
+ * An installed SKILL.md that is a SYMLINK is also a failure, even when it
+ * points at the repo copy. The desktop app rejects a task file that resolves
+ * outside `~/.claude/scheduled-tasks` ("path traversal detected") and the
+ * scheduled run then never starts a session — the job looks alive
+ * (`lastRunAt` advances) and does nothing. That bit both CRT tasks on
+ * 2026-09-03 and again 2026-09-29 → 10-01 after a reinstall re-linked them.
+ * `install-tasks.mjs` copies for this reason; this check refuses the link.
  */
 import {
 	readFileSync,
 	existsSync,
 	readdirSync,
-	realpathSync,
 	lstatSync,
 	readlinkSync,
 } from 'node:fs'
@@ -37,6 +44,12 @@ const REPO_TASKS = resolve(
 const INSTALL_ROOT =
 	process.env.SCHEDULED_TASKS_ROOT ??
 	join(homedir(), '.claude', 'scheduled-tasks')
+
+// The desktop app rewrites the installed file's frontmatter when a task's
+// description is edited through the registry, and drops the trailing newline
+// when it does. That is not drift — compare with trailing whitespace trimmed.
+const sameContent = (a, b) =>
+	readFileSync(a, 'utf8').trimEnd() === readFileSync(b, 'utf8').trimEnd()
 
 const repoTasks = readdirSync(REPO_TASKS)
 	.filter((f) => f.endsWith('.md'))
@@ -56,7 +69,7 @@ if (!existsSync(INSTALL_ROOT)) {
 
 const problems = []
 const dangling = []
-let linked = 0
+const linked = []
 let copied = 0
 let absent = 0
 
@@ -83,13 +96,18 @@ for (const task of repoTasks) {
 		absent++
 		continue
 	}
-	// A symlink back to the repo copy cannot drift at all — the strong form.
-	if (realpathSync(installed) === realpathSync(task.path)) {
-		linked++
+	// A symlink — even one that resolves to the repo copy — is rejected by the
+	// scheduler, so the job is installed and silently never runs.
+	if (link?.isSymbolicLink()) {
+		linked.push({
+			name: task.name,
+			installed,
+			target: readlinkSync(installed),
+		})
 		continue
 	}
 	copied++
-	if (readFileSync(installed, 'utf8') !== readFileSync(task.path, 'utf8')) {
+	if (!sameContent(installed, task.path)) {
 		problems.push({ name: task.name, repo: task.path, installed })
 	}
 }
@@ -114,6 +132,24 @@ if (dangling.length) {
 	process.exit(1)
 }
 
+if (linked.length) {
+	console.error(
+		`✖ ${linked.length} scheduled task(s) are installed as SYMLINKS — the scheduler rejects them:\n`,
+	)
+	for (const l of linked) {
+		console.error(`  ${l.name}`)
+		console.error(`    link:      ${l.installed}`)
+		console.error(`    points at: ${l.target}`)
+	}
+	console.error(
+		'\nA SKILL.md that resolves outside ~/.claude/scheduled-tasks is refused as\n' +
+			'"path traversal" and the scheduled run never starts a session. Replace the\n' +
+			'links with copies:\n' +
+			'  npm run tasks:install',
+	)
+	process.exit(1)
+}
+
 if (problems.length) {
 	console.error(
 		`✖ ${problems.length} scheduled task(s) have drifted from their repo copy:\n`,
@@ -132,6 +168,6 @@ if (problems.length) {
 	process.exit(1)
 }
 
-const parts = [`${linked} linked`, `${copied} copied`]
+const parts = [`${copied} installed`]
 if (absent) parts.push(`${absent} not installed`)
 console.log(`✔ scheduled tasks in sync (${parts.join(', ')})`)
