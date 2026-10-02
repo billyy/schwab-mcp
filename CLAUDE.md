@@ -263,9 +263,18 @@ next morning.
 
 `npm run validate` now runs `tasks:check`, which fails when an installed task
 has drifted from its repo copy (and no-ops on a machine that never installed
-them, so CI is unaffected). `npm run tasks:install` symlinks them, after which
-drift is impossible. **When you change what the CLI emits or what a guardrail
-does, edit `tasks/*.md` in the same commit.**
+them, so CI is unaffected). `npm run tasks:install` **copies** them into place.
+**When you change what the CLI emits or what a guardrail does, edit
+`tasks/*.md` in the same commit, then run `npm run tasks:install`.**
+
+Never symlink an installed SKILL.md at the repo copy, and never do it by hand
+with `ln -s`. The desktop app rejects a task file that resolves outside
+`~/.claude/scheduled-tasks` ("Invalid file path: path traversal detected"), and
+the scheduled run then never starts a session: `lastRunAt` keeps advancing and
+nothing runs. Both CRT tasks went dark that way on 2026-09-03 and again
+2026-09-29 → 10-01 (the install script symlinked at the time; PR #21's
+reinstall re-created the links). `tasks:check` now fails on a linked install
+for this reason.
 
 `cli/drift-diff.mjs --json` emits `optionGaps[]` — priced plans with a
 ready-to-submit `order`, or `reasons[]` explaining why a divergence is
