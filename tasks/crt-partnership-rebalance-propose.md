@@ -7,7 +7,7 @@ Re-check the Partnership account against the CRT benchmark and, when drift warra
 
 **CRT is the reference account — it is immutable. All rebalancing actions apply to the Partnership account only.**
 
-This is the ORDER half of the drift pipeline. The companion task `crt-partnership-drift` already posted the human-readable divergence report to Slack at 7:00am ET, pre-market. This run fires at 10:00am ET, after the open, for one reason: limit prices must come from live regular-session quotes, not the pre-market book. **Do not post a divergence report to Slack from this task** — the only Slack message this run produces is the Approve/Reject message the worker posts for the proposal itself.
+This is the ORDER half of the drift pipeline. The companion task `crt-partnership-drift` already posted the human-readable divergence report to Slack at 7:00am ET, pre-market. This run fires at 10:00am ET, after the open, for one reason: limit prices must come from live regular-session quotes, not the pre-market book. **Do not post a divergence report to Slack from this task** — the only Slack messages this run produces are the Approve/Reject message the worker posts for the proposal itself, or the one-line skip alert in STEP 2.
 
 This run proposes **both equity gaps and option trades** — option trades being covered-call rolls and opening covered-call sales. They are selected by different rules — STEP 3 for equity, STEP 3B for options — and travel in the same proposal batch.
 
@@ -23,7 +23,12 @@ node cli/drift-diff.mjs --json
 - If the command fails or returns an error, report it verbatim and STOP. Do not retry, do not fall back to raw curl or to any other data source.
 
 STEP 2 — Session guard (do this before any analysis):
-- If `pricesTradable` is not exactly true (market holiday, early close, halted, quote fetch failed, or the run fired off-schedule), do NOT build or submit any orders. Report the `marketSession` value and STOP. Post nothing to Slack. A missed day is fine; a limit priced off a closed book is not.
+- If `pricesTradable` is not exactly true (market holiday, early close, halted, quote fetch failed, or the run fired off-schedule), do NOT build or submit any orders. Report the `marketSession` value, post the skip alert below, and STOP. A missed day is fine; a limit priced off a closed book is not.
+- **The skip alert — a skipped day must never be silent.** The scheduler fires on the Mac's LOCAL clock, so when the Mac's timezone changes (travel) this run lands outside market hours every day and the guard above trips every day. From 2026-10-08 to 10-22 that skipped every proposal for two weeks with nothing in Slack to show for it. So post one short plain-text line: write `/tmp/drift-slack.json` as `{ "text": "⚠️ CRT→Partnership proposal SKIPPED — market session <marketSession> at <asOf converted to ET, e.g. Thu 10/22 2:57am ET>; no orders proposed today. If this was not a market holiday, the task's schedule has drifted from 10:00am ET (check the Mac's timezone against the task's local-time cron)." }`, with only the `text` field, then post it with EXACTLY this command, unchanged:
+```bash
+KEY=$(security find-generic-password -s schwab-mcp-order -a api-key -w) && curl -sS -X POST http://localhost:8788/slack/notify -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" --data @/tmp/drift-slack.json
+```
+  Post nothing else — no divergence report, no gaps, no prices. If the post itself fails, say so in your output and still STOP.
 
 STEP 3 — Equity divergence:
 - Work from `gaps` where `proposable` is true.
