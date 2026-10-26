@@ -140,10 +140,6 @@ export function describeOrder(po: ProposalOrder): string {
 			const qty = leg?.quantity ?? '?'
 			const symbol = leg?.instrument?.symbol ?? '?'
 			const instruction = leg?.instruction ?? '?'
-			// A dollar-sized fund order: "SELL $103,000.00 of SWVXX", not "103000 ×"
-			if (leg?.quantityType === 'DOLLARS' && typeof qty === 'number') {
-				return `${instruction} ${usd(qty)} of ${symbol}`
-			}
 			const short = INSTRUCTION_SHORT[instruction] ?? instruction
 			let described = describeOccSymbol(symbol)
 			if (sharedUnderlying && described.startsWith(`${sharedUnderlying} `)) {

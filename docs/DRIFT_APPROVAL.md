@@ -52,8 +52,7 @@ Rules:
   endpoint — a stale market order approved hours later is unbounded risk. A
   multi-leg option spread satisfies this with a net price (`NET_CREDIT`,
   `NET_DEBIT`, `NET_ZERO`) — see [Option rolls](#option-rolls). A single-leg
-  covered call sold to open uses a plain `LIMIT` instead. The one priceless
-  exception is a money-market fund — see [Manual order requests](#manual-order-requests).
+  covered call sold to open uses a plain `LIMIT` instead.
 - `accountNumber` (plain number, hashValue, or its unique last ≥3 digits such
   as `"…260"`) can be set per order or once at the proposal level. It is stored
   resolved to the plain number and re-resolved at execution, so hashValue
@@ -256,29 +255,25 @@ it does not supersede the pending drift proposal, another manual request, or
 get superseded by the next drift run.
 
 ```bash
-# money-market sale by dollar amount (MARKET, fills at $1.00 NAV)
-node cli/schwab-request.mjs sell '$103,000' SWVXX --account 260 --note "fund the transfer"
 # limit equity order
-node cli/schwab-request.mjs buy 25 VTI --limit 251.40 --account 970
+node cli/schwab-request.mjs buy 25 VTI --limit 251.40 --account 970 --note "why"
 # anything else — options, spreads, GTC, up to 10 orders — as raw PlaceOrderParams
 node cli/schwab-request.mjs --order order.json --account 970
-# any of the above with --dry-run: Schwab preview only, nothing stored or posted
+# either with --dry-run: Schwab preview only, nothing stored or posted
 ```
 
-**Money-market funds are the only priceless orders allowed.** A single-leg
-`MARKET` `BUY`/`SELL` of a fund in `MONEY_MARKET_SYMBOLS` (`src/orders/core.ts`:
-SWVXX, SNAXX, SNVXX, SGUXX, SNOXX, SNSXX, SUTXX, SWTXX, SWWXX), with
-`"assetType": "MUTUAL_FUND"` and `quantityType` `SHARES` or `DOLLARS`, is
-accepted because its $1.00 NAV bounds the notional by the quantity alone — and
-Schwab refuses a limit price on such a fund anyway. `ALL_SHARES` stays refused
-(the size is whatever the account holds, so it cannot be bounded), and so does
-a MARKET order on any other mutual fund. A batch made only of money-market
-orders is exempt from the regular-session guard: there is no book to go stale.
+Refused for every request, manual or not: MARKET and STOP orders (no limit
+price to bound a late approval), limit-priced orders outside the regular
+session, uncovered short calls, and anything over `ORDER_DAILY_CAP`,
+`ORDER_MAX_NOTIONAL` or the symbol allowlist.
 
-Still refused for every request, manual or not: MARKET equity and STOP
-orders, limit-priced orders outside the regular session, uncovered short
-calls, and anything over `ORDER_DAILY_CAP`, `ORDER_MAX_NOTIONAL` or the
-symbol allowlist.
+**Mutual and money-market funds cannot go through this path at all.**
+Schwab's Trader API only takes `EQUITY` and `OPTION` orders sized in shares:
+a SWVXX sale previewed as `MUTUAL_FUND` is rejected ("Valid value for
+`assetType` is [EQUITY, OPTION]"; "For quantityType, only SHARES is
+supported"), and as `EQUITY` the preview fails with HTTP 500. The guardrails
+now refuse those shapes up front with that explanation. Trade funds on
+schwab.com.
 
 ## Approving in Slack
 

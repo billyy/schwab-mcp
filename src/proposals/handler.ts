@@ -9,7 +9,6 @@ import {
 	checkGuardrails,
 	checkOrderApiKey,
 	createOrderContext,
-	isMoneyMarketOrder,
 	jsonResponse,
 	previewOne,
 	resolveAccountHash,
@@ -190,12 +189,8 @@ export async function handleProposalsRequest(
 	// where the price is no longer obviously stale. Enforced here rather than
 	// left to the caller: /rebalance/snapshot only *reports* pricesTradable,
 	// and a caller that ignores it must not be able to create a proposal.
-	//
-	// A batch made only of money-market orders is exempt: those fill at their
-	// $1.00 NAV, not against a book, so there is no limit to go stale.
 	const { session, source } = await resolveMarketSession(ctx.client)
-	const needsLiveBook = validated.some((v) => !isMoneyMarketOrder(v.orderBody))
-	if (session !== 'REGULAR' && needsLiveBook && !dryRun) {
+	if (session !== 'REGULAR' && !dryRun) {
 		proposalsLogger.warn('Proposal rejected outside regular session', {
 			session,
 			source,
@@ -278,7 +273,7 @@ export async function handleProposalsRequest(
 			slackPosted: false,
 			marketSession: session,
 			sessionSource: source,
-			sessionGuardWouldBlock: session !== 'REGULAR' && needsLiveBook,
+			sessionGuardWouldBlock: session !== 'REGULAR',
 			summary,
 			orders: proposalOrders.map((o) => ({
 				symbols: o.symbols,
