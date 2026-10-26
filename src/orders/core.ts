@@ -59,6 +59,48 @@ export const OPEN_ORDER_STATUSES = new Set([
 
 export const OrderRequestSchema = withOrderAliases(PlaceOrderParams)
 
+/**
+ * Schwab money-market funds. These hold a stable $1.00 NAV and fill at NAV —
+ * there is no book to price a limit against, and Schwab rejects a limit price
+ * on them — so a MARKET order on one is bounded by its quantity alone. That is
+ * the only reason they are exempt from the "no priceless orders" rule below.
+ * Keep in sync with the copy in cli/schwab-request.mjs.
+ */
+export const MONEY_MARKET_SYMBOLS = new Set([
+	'SWVXX',
+	'SNAXX',
+	'SNVXX',
+	'SGUXX',
+	'SNOXX',
+	'SNSXX',
+	'SUTXX',
+	'SWTXX',
+	'SWWXX',
+])
+const MONEY_MARKET_NAV = 1
+
+/**
+ * A single-leg MARKET buy/sell of a listed money-market fund, sized in shares
+ * or dollars. ALL_SHARES is excluded: its size is whatever the account holds,
+ * so the notional cannot be bounded from the order itself.
+ */
+export function isMoneyMarketOrder(order: any): boolean {
+	const legs: any[] = order?.orderLegCollection ?? []
+	const leg = legs[0]
+	return (
+		order?.orderType === 'MARKET' &&
+		legs.length === 1 &&
+		leg?.instrument?.assetType === 'MUTUAL_FUND' &&
+		MONEY_MARKET_SYMBOLS.has(
+			String(leg?.instrument?.symbol ?? '').toUpperCase(),
+		) &&
+		(leg?.instruction === 'BUY' || leg?.instruction === 'SELL') &&
+		leg?.quantityType !== 'ALL_SHARES' &&
+		typeof leg?.quantity === 'number' &&
+		leg.quantity > 0
+	)
+}
+
 export type AccountDisplayMap = Awaited<
 	ReturnType<typeof buildAccountDisplayMap>
 >
@@ -136,9 +178,15 @@ export function extractSymbols(order: any): string[] {
  * $420 net-credit roll carries a $38,500 assignment obligation on a 385
  * strike. ORDER_MAX_NOTIONAL therefore does not bound that exposure —
  * `checkOptionCoverage` is what keeps the short call backed by shares.
+ *
+ * A money-market MARKET order has no price but is still bounded: shares and
+ * dollars are interchangeable at its $1.00 NAV.
  */
 export function estimateNotional(order: any): number | null {
 	const legs: any[] = order.orderLegCollection ?? []
+	if (isMoneyMarketOrder(order)) {
+		return legs[0].quantity * MONEY_MARKET_NAV
+	}
 	if (NET_ORDER_TYPES.has(order.orderType)) {
 		// A net-zero spread exchanges no cash by definition, priced or not.
 		if (order.orderType === 'NET_ZERO') return 0
@@ -428,7 +476,8 @@ export function checkGuardrails(
 				ok: false,
 				status: 403,
 				error:
-					'Orders without a limit price (e.g. MARKET) are not allowed on this endpoint.',
+					'Orders without a limit price (e.g. MARKET) are not allowed on this endpoint. ' +
+					`The one exception is a single-leg MARKET BUY/SELL of a money-market fund (MUTUAL_FUND: ${[...MONEY_MARKET_SYMBOLS].join(', ')}) sized in SHARES or DOLLARS.`,
 			}
 		}
 		if (config.ORDER_MAX_NOTIONAL !== undefined) {
@@ -652,6 +701,44 @@ export async function createOrderContext(
 	return {
 		ok: true,
 		ctx: { config, client, getAccessToken, accountNumbers, displayMap },
+	}
+}
+
+/**
+ * Resolve what a caller typed for an account — the plain number, its
+ * hashValue, or just its trailing digits as Schwab displays them ("…260",
+ * "260") — to the plain account number. A suffix must be at least 3 digits
+ * and match exactly one account on this login; an ambiguous one is refused
+ * rather than guessed.
+ */
+export function resolveAccountNumber(
+	ctx: OrderContext,
+	requested: string,
+): { ok: true; accountNumber: string } | { ok: false; error: string } {
+	const exact = ctx.accountNumbers.find(
+		(a) => a.accountNumber === requested || a.hashValue === requested,
+	)
+	if (exact) return { ok: true, accountNumber: exact.accountNumber }
+	const suffix = requested.replace(/^[.…\s]+/, '')
+	if (!/^\d{3,}$/.test(suffix)) {
+		return {
+			ok: false,
+			error:
+				'accountNumber does not match any account (plain or hashValue) on this login',
+		}
+	}
+	const matches = ctx.accountNumbers.filter((a) =>
+		a.accountNumber.endsWith(suffix),
+	)
+	if (matches.length === 1) {
+		return { ok: true, accountNumber: matches[0]!.accountNumber }
+	}
+	return {
+		ok: false,
+		error:
+			matches.length === 0
+				? `No account on this login ends in ${suffix}`
+				: `${matches.length} accounts on this login end in ${suffix} — give more digits`,
 	}
 }
 
