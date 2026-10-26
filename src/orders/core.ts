@@ -60,46 +60,14 @@ export const OPEN_ORDER_STATUSES = new Set([
 export const OrderRequestSchema = withOrderAliases(PlaceOrderParams)
 
 /**
- * Schwab money-market funds. These hold a stable $1.00 NAV and fill at NAV —
- * there is no book to price a limit against, and Schwab rejects a limit price
- * on them — so a MARKET order on one is bounded by its quantity alone. That is
- * the only reason they are exempt from the "no priceless orders" rule below.
- * Keep in sync with the copy in cli/schwab-request.mjs.
+ * The only asset types Schwab's Trader API will take an order for. Mutual
+ * and money-market funds (e.g. SWVXX) are refused by previewOrder — as
+ * MUTUAL_FUND ("Valid value for `assetType` is [EQUITY, OPTION]") and as
+ * EQUITY (HTTP 500) — and dollar-sized quantities are refused outright, so
+ * such orders must be placed on schwab.com. Rejected here so the caller gets
+ * that answer instead of an opaque preview failure.
  */
-export const MONEY_MARKET_SYMBOLS = new Set([
-	'SWVXX',
-	'SNAXX',
-	'SNVXX',
-	'SGUXX',
-	'SNOXX',
-	'SNSXX',
-	'SUTXX',
-	'SWTXX',
-	'SWWXX',
-])
-const MONEY_MARKET_NAV = 1
-
-/**
- * A single-leg MARKET buy/sell of a listed money-market fund, sized in shares
- * or dollars. ALL_SHARES is excluded: its size is whatever the account holds,
- * so the notional cannot be bounded from the order itself.
- */
-export function isMoneyMarketOrder(order: any): boolean {
-	const legs: any[] = order?.orderLegCollection ?? []
-	const leg = legs[0]
-	return (
-		order?.orderType === 'MARKET' &&
-		legs.length === 1 &&
-		leg?.instrument?.assetType === 'MUTUAL_FUND' &&
-		MONEY_MARKET_SYMBOLS.has(
-			String(leg?.instrument?.symbol ?? '').toUpperCase(),
-		) &&
-		(leg?.instruction === 'BUY' || leg?.instruction === 'SELL') &&
-		leg?.quantityType !== 'ALL_SHARES' &&
-		typeof leg?.quantity === 'number' &&
-		leg.quantity > 0
-	)
-}
+const ORDERABLE_ASSET_TYPES = new Set(['EQUITY', 'OPTION'])
 
 export type AccountDisplayMap = Awaited<
 	ReturnType<typeof buildAccountDisplayMap>
@@ -178,15 +146,9 @@ export function extractSymbols(order: any): string[] {
  * $420 net-credit roll carries a $38,500 assignment obligation on a 385
  * strike. ORDER_MAX_NOTIONAL therefore does not bound that exposure —
  * `checkOptionCoverage` is what keeps the short call backed by shares.
- *
- * A money-market MARKET order has no price but is still bounded: shares and
- * dollars are interchangeable at its $1.00 NAV.
  */
 export function estimateNotional(order: any): number | null {
 	const legs: any[] = order.orderLegCollection ?? []
-	if (isMoneyMarketOrder(order)) {
-		return legs[0].quantity * MONEY_MARKET_NAV
-	}
 	if (NET_ORDER_TYPES.has(order.orderType)) {
 		// A net-zero spread exchanges no cash by definition, priced or not.
 		if (order.orderType === 'NET_ZERO') return 0
@@ -449,6 +411,21 @@ export function checkGuardrails(
 	if (symbols.length === 0) {
 		return { ok: false, status: 400, error: 'Order has no instrument symbols' }
 	}
+	const legs: any[] = (orderBody as any).orderLegCollection ?? []
+	const unorderable = legs.filter(
+		(l) =>
+			!ORDERABLE_ASSET_TYPES.has(l?.instrument?.assetType) ||
+			(l?.quantityType !== undefined && l.quantityType !== 'SHARES'),
+	)
+	if (unorderable.length > 0) {
+		return {
+			ok: false,
+			status: 400,
+			error:
+				"Schwab's Trader API only accepts EQUITY and OPTION orders sized in SHARES. " +
+				'Mutual funds and money-market funds (e.g. SWVXX) must be traded on schwab.com.',
+		}
+	}
 	const structure = checkOptionStructure(orderBody)
 	if (!structure.ok) {
 		return { ok: false, status: structure.status, error: structure.error }
@@ -476,8 +453,7 @@ export function checkGuardrails(
 				ok: false,
 				status: 403,
 				error:
-					'Orders without a limit price (e.g. MARKET) are not allowed on this endpoint. ' +
-					`The one exception is a single-leg MARKET BUY/SELL of a money-market fund (MUTUAL_FUND: ${[...MONEY_MARKET_SYMBOLS].join(', ')}) sized in SHARES or DOLLARS.`,
+					'Orders without a limit price (e.g. MARKET) are not allowed on this endpoint.',
 			}
 		}
 		if (config.ORDER_MAX_NOTIONAL !== undefined) {

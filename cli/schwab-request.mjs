@@ -8,10 +8,8 @@
  * script never places orders itself.
  *
  * Usage — shorthand for a single-leg order:
- *   node cli/schwab-request.mjs <buy|sell> <shares|$dollars> <SYMBOL> --account <acct> [options]
+ *   node cli/schwab-request.mjs <buy|sell> <shares> <SYMBOL> --limit <price> --account <acct> [options]
  *
- *   node cli/schwab-request.mjs sell '$103,000' SWVXX --account 260
- *       → MARKET SELL $103,000.00 of SWVXX (money-market fund, fills at $1.00 NAV)
  *   node cli/schwab-request.mjs buy 25 VTI --limit 251.40 --account 970
  *       → LIMIT BUY 25 × VTI @ $251.40, DAY
  *
@@ -23,16 +21,19 @@
  *   --account <acct>   plain number, or its unique last digits as Schwab shows
  *                      them ("…260" / "260"). Required unless every order
  *                      carries its own accountNumber.
- *   --limit <price>    limit price (required for anything but a money-market fund)
+ *   --limit <price>    limit price (required)
  *   --duration <d>     DAY (default) | GOOD_TILL_CANCEL | GTC | FILL_OR_KILL ...
  *   --note "<text>"    why — shown at the top of the Slack message
  *   --allow-duplicate  approve even if an identical order is already open
  *   --dry-run          preview with Schwab only; nothing stored or posted
  *
  * What the Worker refuses, and why it will not be talked out of it:
- *   - Orders with no limit price (MARKET equity, STOP). An approval can land
- *     hours after the request; a priceless order would fill at whatever the
- *     market is then. Money-market funds are the one exception — $1.00 NAV.
+ *   - Orders with no limit price (MARKET, STOP). An approval can land hours
+ *     after the request; a priceless order would fill at whatever the market
+ *     is then.
+ *   - Mutual and money-market funds (e.g. SWVXX), and dollar-sized orders.
+ *     Schwab's Trader API only takes EQUITY and OPTION orders in shares —
+ *     those must be placed on schwab.com.
  *   - Limit-priced orders outside the regular session (stale book).
  *   - Short calls not covered by shares, the daily cap, the symbol allowlist
  *     and ORDER_MAX_NOTIONAL, exactly as for /orders.
@@ -46,20 +47,6 @@ import { readFileSync } from 'node:fs'
 
 const WORKER_URL = process.env.WORKER_URL ?? 'http://localhost:8788'
 const PROPOSALS_URL = `${WORKER_URL.replace(/\/$/, '')}/proposals`
-
-// Mirror of MONEY_MARKET_SYMBOLS in src/orders/core.ts — the Worker is the
-// authority; this only picks the right order shape up front.
-const MONEY_MARKET_SYMBOLS = new Set([
-	'SWVXX',
-	'SNAXX',
-	'SNVXX',
-	'SGUXX',
-	'SNOXX',
-	'SNSXX',
-	'SUTXX',
-	'SWTXX',
-	'SWWXX',
-])
 
 const VALUE_FLAGS = new Set([
 	'--account',
@@ -121,18 +108,22 @@ function parseArgs(argv) {
 	return { flags, positional }
 }
 
-/** "103000" → shares; "$103,000" / "$103000.50" → dollars */
-function parseAmount(raw) {
-	const dollars = raw.startsWith('$')
-	const n = Number(raw.replace(/[$,]/g, ''))
-	if (!Number.isFinite(n) || n <= 0) fail(`Not a positive amount: ${raw}`)
-	return { dollars, quantity: n }
+function parseShares(raw) {
+	if (raw.startsWith('$')) {
+		fail(
+			"Dollar amounts can't be ordered: Schwab's Trader API only sizes orders in shares. " +
+				'(Money-market funds such as SWVXX cannot be ordered through the API at all — use schwab.com.)',
+		)
+	}
+	const n = Number(raw.replace(/,/g, ''))
+	if (!Number.isFinite(n) || n <= 0) fail(`Not a positive share count: ${raw}`)
+	return n
 }
 
 function buildShorthandOrder(positional, flags) {
 	if (positional.length !== 3) {
 		fail(
-			'Usage: schwab-request.mjs <buy|sell> <shares|$dollars> <SYMBOL> --account <acct> [--limit <price>]\n' +
+			'Usage: schwab-request.mjs <buy|sell> <shares> <SYMBOL> --limit <price> --account <acct>\n' +
 				'   or: schwab-request.mjs --order <order.json> --account <acct>',
 		)
 	}
@@ -144,39 +135,9 @@ function buildShorthandOrder(positional, flags) {
 		)
 	}
 	const symbol = symbolRaw.toUpperCase()
-	const { dollars, quantity } = parseAmount(amountRaw)
+	const quantity = parseShares(amountRaw)
 	const duration = flags.duration ?? 'DAY'
 
-	if (MONEY_MARKET_SYMBOLS.has(symbol)) {
-		if (flags.limit !== undefined) {
-			fail(
-				`${symbol} is a money-market fund — it fills at NAV and takes no limit price`,
-			)
-		}
-		return {
-			order: {
-				orderType: 'MARKET',
-				session: 'NORMAL',
-				duration,
-				orderStrategyType: 'SINGLE',
-				orderLegCollection: [
-					{
-						instruction,
-						quantity,
-						quantityType: dollars ? 'DOLLARS' : 'SHARES',
-						instrument: { symbol, assetType: 'MUTUAL_FUND' },
-					},
-				],
-			},
-			words: `${instruction} ${dollars ? usd(quantity) : `${quantity} shares`} of ${symbol} (money-market fund, MARKET at $1.00 NAV)`,
-		}
-	}
-
-	if (dollars) {
-		fail(
-			'Dollar amounts are only supported for money-market funds; give a share count',
-		)
-	}
 	if (flags.limit === undefined) {
 		fail(
 			`${symbol} needs --limit <price>. Approval can land hours later, so priceless ` +
