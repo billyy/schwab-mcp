@@ -142,7 +142,9 @@ export async function handleSlackInteraction(
 			ctx.waitUntil(
 				updateMessage(
 					result.proposal,
-					`⌛ Expired at ${result.proposal.expiresAt} — re-run the drift task for fresh prices.`,
+					result.proposal.kind === 'manual'
+						? `⌛ Expired at ${result.proposal.expiresAt} — re-submit the request for fresh prices.`
+						: `⌛ Expired at ${result.proposal.expiresAt} — re-run the drift task for fresh prices.`,
 				),
 			)
 		} else if (responseUrl) {

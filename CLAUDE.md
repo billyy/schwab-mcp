@@ -308,6 +308,14 @@ allowlist and executes approved batches via `src/proposals/executor.ts` —
 the identical LLM-free path `/orders` uses (shared in `src/orders/core.ts`).
 Disabled unless the `SLACK_*` secrets are set. Docs: `docs/DRIFT_APPROVAL.md`
 
+**Manual requests:** `cli/schwab-request.mjs` sends any order (shorthand or a
+raw order file) through the same path as a `"kind": "manual"` proposal. Manual
+and drift proposals never supersede each other — before kinds existed, any
+new proposal killed the pending drift proposal's buttons. A money-market fund
+(`MONEY_MARKET_SYMBOLS`) is the only priceless order allowed: MARKET, sized in
+shares or `DOLLARS`, bounded by its $1.00 NAV. Account numbers may be given as
+their unique trailing digits (`"…260"`).
+
 ## Two independent OAuth legs
 
 Do not couple these — a bug that did cost weeks of broken Desktop connections:

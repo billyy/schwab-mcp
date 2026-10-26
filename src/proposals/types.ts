@@ -38,8 +38,19 @@ export interface ProposalOrder {
 		  }
 }
 
+/**
+ * `drift` — the scheduled CRT→Partnership batch. A new one supersedes the
+ * previous pending drift proposal, since only the latest prices are valid.
+ * `manual` — a one-off order someone asked to have approved. Each stands on
+ * its own: it never supersedes anything and is never superseded, so an ad-hoc
+ * request cannot kill the drift proposal's buttons or vice versa.
+ */
+export type ProposalKind = 'drift' | 'manual'
+
 export interface ProposalRecord {
 	id: string
+	/** Absent on records stored before kinds existed — those are all drift */
+	kind?: ProposalKind
 	status: ProposalStatus
 	/** Drift delta summary written by the Cowork task, shown in Slack */
 	summary: string

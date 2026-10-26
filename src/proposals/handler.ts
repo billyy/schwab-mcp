@@ -9,9 +9,11 @@ import {
 	checkGuardrails,
 	checkOrderApiKey,
 	createOrderContext,
+	isMoneyMarketOrder,
 	jsonResponse,
 	previewOne,
 	resolveAccountHash,
+	resolveAccountNumber,
 } from '../orders/core'
 import {
 	LOGGER_CONTEXTS,
@@ -31,6 +33,8 @@ const ProposalRequestSchema = z.object({
 	accountNumber: z.string().optional(),
 	orders: z.array(z.unknown()).min(1).max(PROPOSAL_MAX_ORDERS),
 	allowDuplicate: z.boolean().optional(),
+	/** See ProposalKind — `manual` for a one-off request, default `drift` */
+	kind: z.enum(['drift', 'manual']).optional(),
 	/**
 	 * Rehearse the batch without creating anything: validation, guardrails and
 	 * the real Schwab preview all run, then the request returns before the
@@ -62,7 +66,10 @@ export function slackFeatureMissing(
  * POST /proposals — create a drift-rebalance proposal awaiting Slack approval.
  *
  * Auth: `Authorization: Bearer <ORDER_API_KEY>` (same key as /orders).
- * Body: { summary, accountNumber?, orders: PlaceOrderParams[], allowDuplicate? }
+ * Body: { summary, accountNumber?, orders: PlaceOrderParams[], allowDuplicate?, kind? }
+ * accountNumber (here or per order) may be the plain number, its hashValue,
+ * or its unique trailing digits ("…260"); it is stored resolved to the plain
+ * number.
  * Every order is validated, guardrail-checked, and previewed with Schwab
  * before anything is stored or posted to Slack — a proposal is only created
  * if the whole batch is clean. Execution happens later, via the Slack
@@ -112,6 +119,7 @@ export async function handleProposalsRequest(
 		allowDuplicate,
 		dryRun,
 	} = parsedBody.data
+	const kind = parsedBody.data.kind ?? 'drift'
 
 	// --- Validate every order and run pure guardrails before any I/O ---
 	const validated: { orderBody: Record<string, unknown>; accountNumber: string }[] =
@@ -182,8 +190,12 @@ export async function handleProposalsRequest(
 	// where the price is no longer obviously stale. Enforced here rather than
 	// left to the caller: /rebalance/snapshot only *reports* pricesTradable,
 	// and a caller that ignores it must not be able to create a proposal.
+	//
+	// A batch made only of money-market orders is exempt: those fill at their
+	// $1.00 NAV, not against a book, so there is no limit to go stale.
 	const { session, source } = await resolveMarketSession(ctx.client)
-	if (session !== 'REGULAR' && !dryRun) {
+	const needsLiveBook = validated.some((v) => !isMoneyMarketOrder(v.orderBody))
+	if (session !== 'REGULAR' && needsLiveBook && !dryRun) {
 		proposalsLogger.warn('Proposal rejected outside regular session', {
 			session,
 			source,
@@ -197,14 +209,18 @@ export async function handleProposalsRequest(
 	}
 
 	const proposalOrders: ProposalOrder[] = []
-	for (const [index, { orderBody, accountNumber }] of validated.entries()) {
-		const accountHash = resolveAccountHash(ctx, accountNumber)
-		if (!accountHash) {
+	for (const [index, { orderBody, accountNumber: requested }] of validated.entries()) {
+		const resolved = resolveAccountNumber(ctx, requested)
+		const accountHash = resolved.ok
+			? resolveAccountHash(ctx, resolved.accountNumber)
+			: null
+		if (!resolved.ok || !accountHash) {
 			return jsonResponse(400, {
-				error: `Order ${index}: accountNumber does not match any account (plain or hashValue) on this login`,
+				error: `Order ${index}: ${resolved.ok ? 'accountNumber does not match any account on this login' : resolved.error}`,
 				availableAccounts: availableAccountDisplays(ctx),
 			})
 		}
+		const accountNumber = resolved.accountNumber
 		const preview = await previewOne(ctx, accountHash, orderBody)
 		if ('error' in preview.schwabPreview) {
 			return jsonResponse(502, {
@@ -262,7 +278,7 @@ export async function handleProposalsRequest(
 			slackPosted: false,
 			marketSession: session,
 			sessionSource: source,
-			sessionGuardWouldBlock: session !== 'REGULAR',
+			sessionGuardWouldBlock: session !== 'REGULAR' && needsLiveBook,
 			summary,
 			orders: proposalOrders.map((o) => ({
 				symbols: o.symbols,
@@ -291,6 +307,7 @@ export async function handleProposalsRequest(
 	const now = new Date()
 	const proposal: ProposalRecord = {
 		id: crypto.randomUUID(),
+		kind,
 		status: 'pending',
 		summary,
 		orders: proposalOrders,
@@ -301,7 +318,7 @@ export async function handleProposalsRequest(
 
 	const posted = await slackApi(config.SLACK_BOT_TOKEN!, 'chat.postMessage', {
 		channel: config.SLACK_CHANNEL_ID!,
-		text: `Drift rebalance proposal: ${summary}`,
+		text: `${kind === 'manual' ? 'Order approval request' : 'Drift rebalance proposal'}: ${summary}`,
 		blocks: buildProposalBlocks(proposal),
 	})
 	if (!posted.ok || !posted.ts || !posted.channel) {
@@ -367,6 +384,7 @@ export async function handleProposalsRequest(
 	})
 	return jsonResponse(200, {
 		proposalId: proposal.id,
+		kind,
 		status: proposal.status,
 		expiresAt: proposal.expiresAt,
 		superseded: created.superseded.map((s) => s.id),

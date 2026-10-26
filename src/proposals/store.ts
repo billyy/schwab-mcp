@@ -70,14 +70,20 @@ export class ProposalStore {
 		await this.storage.put(KEY_PREFIX + p.id, p)
 	}
 
-	/** Store a new pending proposal, superseding any prior pending one */
+	/**
+	 * Store a new pending proposal. A drift proposal supersedes any prior
+	 * pending drift proposal; a manual one supersedes nothing (see ProposalKind).
+	 */
 	private async create(
 		p: StoredProposal,
 	): Promise<{ ok: true; superseded: { id: string; slack?: StoredProposal['slack'] }[] }> {
 		const superseded: { id: string; slack?: StoredProposal['slack'] }[] = []
-		const all = await this.storage.list<StoredProposal>({ prefix: KEY_PREFIX })
+		const all =
+			(p.kind ?? 'drift') === 'drift'
+				? await this.storage.list<StoredProposal>({ prefix: KEY_PREFIX })
+				: new Map<string, StoredProposal>()
 		for (const existing of all.values()) {
-			if (existing.status === 'pending') {
+			if (existing.status === 'pending' && (existing.kind ?? 'drift') === 'drift') {
 				existing.status = 'superseded'
 				await this.save(existing)
 				superseded.push({ id: existing.id, slack: existing.slack })

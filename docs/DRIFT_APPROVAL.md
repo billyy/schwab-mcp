@@ -52,17 +52,21 @@ Rules:
   endpoint — a stale market order approved hours later is unbounded risk. A
   multi-leg option spread satisfies this with a net price (`NET_CREDIT`,
   `NET_DEBIT`, `NET_ZERO`) — see [Option rolls](#option-rolls). A single-leg
-  covered call sold to open uses a plain `LIMIT` instead.
-- `accountNumber` (plain number or hashValue) can be set per order or once at
-  the proposal level. It is re-resolved at execution, so hashValue rotation is
-  harmless.
+  covered call sold to open uses a plain `LIMIT` instead. The one priceless
+  exception is a money-market fund — see [Manual order requests](#manual-order-requests).
+- `accountNumber` (plain number, hashValue, or its unique last ≥3 digits such
+  as `"…260"`) can be set per order or once at the proposal level. It is stored
+  resolved to the plain number and re-resolved at execution, so hashValue
+  rotation is harmless.
 - Max 10 orders per proposal; the batch must fit the remaining
   `ORDER_DAILY_CAP` for the day.
 - Every order must pass the symbol allowlist, `ORDER_MAX_NOTIONAL`, a live
   Schwab preview, and the duplicate-open-order check **at proposal time** —
   otherwise the whole request is rejected and nothing is stored or posted.
-- A new proposal **supersedes** any prior pending proposal (its Slack message
-  is updated and it can no longer be approved). Only the latest delta is valid.
+- A new drift proposal **supersedes** any prior pending drift proposal (its
+  Slack message is updated and it can no longer be approved). Only the latest
+  delta is valid. Manual requests (`"kind": "manual"`) are never superseded
+  and never supersede anything.
 - Proposals **expire 4 hours** after creation.
 - The Cowork task's job ends at the HTTP 200. It must never poll for approval,
   auto-retry a rejected proposal, or resubmit on a non-2xx without a human
@@ -241,6 +245,40 @@ leg, which would report a two-leg roll at double its real cash value.
 It is not the assignment exposure. A $420 net-credit roll into a 385-strike
 call carries a $38,500 obligation. `ORDER_MAX_NOTIONAL` does not bound that;
 the coverage guard is what keeps it backed by shares.
+
+## Manual order requests
+
+Any order — not just drift — can go through the same approval path with
+`cli/schwab-request.mjs`. It posts a `"kind": "manual"` proposal: identical
+validation, guardrails, Schwab preview, Approve/Reject buttons and executor,
+headed "Order approval request" in Slack. A manual request stands on its own:
+it does not supersede the pending drift proposal, another manual request, or
+get superseded by the next drift run.
+
+```bash
+# money-market sale by dollar amount (MARKET, fills at $1.00 NAV)
+node cli/schwab-request.mjs sell '$103,000' SWVXX --account 260 --note "fund the transfer"
+# limit equity order
+node cli/schwab-request.mjs buy 25 VTI --limit 251.40 --account 970
+# anything else — options, spreads, GTC, up to 10 orders — as raw PlaceOrderParams
+node cli/schwab-request.mjs --order order.json --account 970
+# any of the above with --dry-run: Schwab preview only, nothing stored or posted
+```
+
+**Money-market funds are the only priceless orders allowed.** A single-leg
+`MARKET` `BUY`/`SELL` of a fund in `MONEY_MARKET_SYMBOLS` (`src/orders/core.ts`:
+SWVXX, SNAXX, SNVXX, SGUXX, SNOXX, SNSXX, SUTXX, SWTXX, SWWXX), with
+`"assetType": "MUTUAL_FUND"` and `quantityType` `SHARES` or `DOLLARS`, is
+accepted because its $1.00 NAV bounds the notional by the quantity alone — and
+Schwab refuses a limit price on such a fund anyway. `ALL_SHARES` stays refused
+(the size is whatever the account holds, so it cannot be bounded), and so does
+a MARKET order on any other mutual fund. A batch made only of money-market
+orders is exempt from the regular-session guard: there is no book to go stale.
+
+Still refused for every request, manual or not: MARKET equity and STOP
+orders, limit-priced orders outside the regular session, uncovered short
+calls, and anything over `ORDER_DAILY_CAP`, `ORDER_MAX_NOTIONAL` or the
+symbol allowlist.
 
 ## Approving in Slack
 
